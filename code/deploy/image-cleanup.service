@@ -1,0 +1,10 @@
+[Unit]
+Description=Cleanup old generated images
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/image-gen/code
+Environment=PATH=/root/image-gen/code/venv/bin
+ExecStart=/root/image-gen/code/venv/bin/python -c "from app.utils import cleanup_old_files; print(f'Cleaned {cleanup_old_files()} files')"

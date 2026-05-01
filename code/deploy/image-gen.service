@@ -1,0 +1,18 @@
+[Unit]
+Description=Image MCP Server (MCP Streamable HTTP + Web)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/image-gen/code
+Environment=PATH=/root/image-gen/code/venv/bin
+ExecStart=/root/image-gen/code/venv/bin/python -m app.server
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

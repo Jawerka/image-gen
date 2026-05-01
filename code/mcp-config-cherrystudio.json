@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "image-gen-pro": {
+      "type": "streamableHttp",
+      "url": "http://192.168.88.16:8081/mcp",
+      "headers": {
+        "Content-Type": "application/json"
+      }
+    }
+  },
+  "_instructions": {
+    "generate_image": {
+      "batch_size_info": "batch_size controls how many images are generated in a single API call (1-2). Each image gets a unique URL.",
+      "examples": {
+        "1_image": "batch_size=1",
+        "2_images": "batch_size=2"
+      },
+      "note": "For more than 2 images, call the tool multiple times. Do NOT use batch_size > 2."
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "image-gen-pro": {
+      "type": "streamableHttp",
+      "url": "http://192.168.88.16:8081/mcp",
+      "headers": {
+        "Content-Type": "application/json"
+      }
+    }
+  }
+}
