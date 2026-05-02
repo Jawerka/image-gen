@@ -3,3 +3,10 @@ images/
 
 # Cherry Studio documentation
 code/cherry-studio-docs/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
