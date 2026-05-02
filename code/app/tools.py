@@ -237,6 +237,20 @@ def register_image_tools(mcp: FastMCP):
         return "\n".join(result_lines)
 
     # ------------------------------------------------------------------
+    # Upscaler validation
+    # ------------------------------------------------------------------
+    def validate_upscaler(name: str) -> None:
+        """Validate that the upscaler exists in SD WebUI."""
+        session = get_session()
+        resp = session.get(f"{SD_WEBUI_URL}/sdapi/v1/upscalers", timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        available = [u["name"] for u in resp.json()]
+        if name not in available:
+            raise ValueError(
+                f"Upscaler '{name}' not found. Available: {available}"
+            )
+
+    # ------------------------------------------------------------------
     # upscale_images
     # ------------------------------------------------------------------
     @mcp.tool()
@@ -260,6 +274,13 @@ def register_image_tools(mcp: FastMCP):
 
         if not file_urls:
             return "Error: No files provided for upscaling."
+
+        # Validate upscaler exists
+        try:
+            validate_upscaler(upscaler_1)
+        except (ValueError, requests.RequestException) as exc:
+            logger.error("Upscaler validation failed: %s", exc)
+            return f"Error: {exc}"
 
         _url_prefix = PUBLIC_BASE_URL.rstrip("/")
 
@@ -322,7 +343,18 @@ def register_image_tools(mcp: FastMCP):
                 logger.error("upscale_images: rejected source %r: %s", url_or_path, exc)
                 return f"Error: {exc}"
 
-            payload = {
+            base64_image = base64.b64encode(img_data).decode("utf-8")
+
+            # Minimal payload to avoid triggering problematic extensions like sd-webui-pixelart
+            minimal_payload = {
+                "resize_mode": resize_mode,
+                "upscaling_resize": upscaling_resize,
+                "upscaler_1": upscaler_1,
+                "image": base64_image,
+            }
+
+            # Full payload with all options
+            full_payload = {
                 "resize_mode": resize_mode,
                 "show_extras_results": True,
                 "gfpgan_visibility": 0,
@@ -336,24 +368,47 @@ def register_image_tools(mcp: FastMCP):
                 "upscaler_2": upscaler_2,
                 "extras_upscaler_2_visibility": 0,
                 "upscale_first": False,
-                "image": base64.b64encode(img_data).decode("utf-8"),
+                "image": base64_image,
             }
 
-            try:
-                resp = session.post(
-                    f"{SD_WEBUI_URL}/sdapi/v1/extra-single-image",
-                    json=payload,
-                    timeout=REQUEST_TIMEOUT,
-                )
-                resp.raise_for_status()
-            except requests.RequestException as exc:
-                logger.exception("upscale_images: WebUI request failed for %s", url_or_path)
-                return f"Error: WebUI request failed for {url_or_path}: {exc}"
+            # Try minimal payload first, then full payload as fallback
+            payloads_to_try = [minimal_payload]
+            if upscaler_2 != "None" or resize_mode != 0:
+                payloads_to_try.append(full_payload)
 
-            data = resp.json()
-            upscaled_b64 = data.get("image")
+            upscaled_b64 = None
+            last_error = None
+
+            for payload in payloads_to_try:
+                try:
+                    resp = session.post(
+                        f"{SD_WEBUI_URL}/sdapi/v1/extra-single-image",
+                        json=payload,
+                        timeout=REQUEST_TIMEOUT,
+                    )
+
+                    if not resp.ok:
+                        try:
+                            err = resp.json()
+                        except Exception:
+                            err = resp.text
+                        logger.error("WebUI error response: %s", err)
+                        last_error = f"WebUI error: {err}"
+                        continue
+
+                    data = resp.json()
+                    upscaled_b64 = data.get("image")
+                    if upscaled_b64:
+                        break
+                    last_error = "No image returned from extra-single-image endpoint"
+
+                except requests.RequestException as exc:
+                    logger.exception("upscale_images: WebUI request failed for %s", url_or_path)
+                    last_error = f"WebUI request failed: {exc}"
+                    continue
+
             if not upscaled_b64:
-                raise RuntimeError("No image returned from extra-single-image endpoint")
+                return f"Error: WebUI request failed for {url_or_path}: {last_error}"
 
             filename = generate_filename(prefix=f"upscaled_{Path(original_name).stem}")
             save_image_from_base64(upscaled_b64, filename)
