@@ -131,9 +131,9 @@ generate_image(
 - `sampler_name` — имя сэмплера (по умолчанию "Euler a")
 - `scheduler` — тип планировщика (по умолчанию "Karras")
 - `seed` — сид для воспроизводимости (-1 для случайного)
-- `batch_size` — количество изображений (1-4, по умолчанию 1)
 - `restore_faces` — восстанавливать ли лица (по умолчанию False)
 - `tiling` — создавать ли для плитки (по умолчанию False)
+- `description` — дополнительное описание для записи в метаданные PNG (по умолчанию "")
 
 **Рекомендуемые разрешения (width x height):**
 - 1024 × 1024 – 1:1
@@ -164,7 +164,7 @@ generate_image(
     sampler_name="Euler a",
     scheduler="Karras",
     seed=-1,
-    batch_size=1
+    description="Sunset landscape generated for demo"
 )
 ```
 
@@ -173,9 +173,8 @@ generate_image(
 Image generation complete! (1 image(s))
 Prompt: a beautiful sunset over mountains, digital art, vibrant colors
 
-Image 1:
+Image 1 (seed 1234567890):
   URL: http://192.168.88.16:8080/images/sd_a1b2c3d4e5f6.png
-  Thumbnail: http://192.168.88.16:8080/thumbs/sd_a1b2c3d4e5f6.jpg
 
 --- Generation Parameters ---
 Steps: 30, Sampler: Euler a, CFG scale: 7.5, Size: 1024x1024
@@ -183,14 +182,16 @@ Steps: 30, Sampler: Euler a, CFG scale: 7.5, Size: 1024x1024
 
 #### 2. upscale_images
 
-Увеличивает разрешение изображений.
+Увеличивает разрешение изображений через SD WebUI.
+
+> **Безопасность:** Принимаются только URL с вашего `PUBLIC_BASE_URL` (например, `http://host:8080/images/name.png`) или имена файлов из директории `IMAGE_DIR`. Произвольные внешние URL и произвольные локальные пути отклоняются для предотвращения SSRF-атак.
 
 **Параметры:**
-- `file_urls` (обязательный) — список URL или путей к изображениям
+- `file_urls` (обязательный) — список доверенных URL или имён файлов
 - `resize_mode` — режим изменения размера (0-4)
 - `upscaling_resize` — множитель увеличения (по умолчанию 4)
-- `upscaling_resize_w` — целевая ширина
-- `upscaling_resize_h` — целевая высота
+- `upscaling_resize_w` — целевая ширина (по умолчанию 512)
+- `upscaling_resize_h` — целевая высота (по умолчанию 512)
 - `upscaler_1` — первый апскейлер (по умолчанию "R-ESRGAN 4x+")
 - `upscaler_2` — второй апскейлер (по умолчанию "None")
 
@@ -203,50 +204,30 @@ upscale_images(
 )
 ```
 
-#### 3. get_sd_models
+#### 3. get_sd_upscalers
 
-Получить список доступных SD-моделей.
-
-**Пример:**
-```python
-get_sd_models()
-```
-
-**Ответ:**
-```
-Available SD Models:
-  - yiffInHell_yihxxxTENDEDV20
-  - sd_xl_base_1.0
-  - dreamshaper-xl
-```
-
-#### 4. set_sd_model
-
-Установить активную SD-модель.
-
-**Параметры:**
-- `model_name` — название модели для установки
-
-**Пример:**
-```python
-set_sd_model("yiffInHell_yihxxxTENDEDV20")
-```
-
-#### 5. get_sd_upscalers
-
-Получить список доступных апскейлеров.
+Получить список доступных апскейлеров из SD WebUI.
 
 **Пример:**
 ```python
 get_sd_upscalers()
 ```
 
-#### 6. get_gallery
+**Ответ:**
+```
+Available Upscalers:
+
+  - R-ESRGAN 4x+
+  - R-ESRGAN 2x+
+  - None
+```
+
+#### 4. get_gallery
 
 Получить список последних сгенерированных изображений.
 
 **Параметры:**
-- `limit` — максимальное количество изображений (по умолчанию 20)
+- `limit` — максимальное количество изображений (по умолчанию 20, в Web API `/gallery` — 50)
 
 **Пример:**
 ```python

@@ -12,22 +12,35 @@ MCP инструменты для генерации изображений.
 
 import base64
 import logging
-import re
-import requests
+import random
 from pathlib import Path
-from typing import List
 
-from PIL import Image as PILImage, PngImagePlugin
+import requests
 from fastmcp import FastMCP
+from PIL import Image as PILImage
+from PIL import PngImagePlugin
 
 from app.settings import (
-    SD_WEBUI_URL, AUTH_USER, AUTH_PASS, REQUEST_TIMEOUT,
-    PUBLIC_BASE_URL, IMAGE_DIR, THUMB_DIR,
-    SD_STEPS, SD_WIDTH, SD_HEIGHT, SD_CFG_SCALE,
-    SD_NEGATIVE_PROMPT, SD_SEED, SD_SAMPLER, SD_SCHEDULE_TYPE,
+    AUTH_PASS,
+    AUTH_USER,
+    IMAGE_DIR,
+    PUBLIC_BASE_URL,
+    REQUEST_TIMEOUT,
+    SD_CFG_SCALE,
+    SD_HEIGHT,
+    SD_NEGATIVE_PROMPT,
+    SD_SAMPLER,
+    SD_SCHEDULE_TYPE,
+    SD_STEPS,
+    SD_WEBUI_URL,
+    SD_WIDTH,
+    THUMB_DIR,
+    WEBP_DIR,
 )
 from app.utils import (
-    generate_filename, save_image, make_thumbnail,
+    generate_filename,
+    make_thumbnail,
+    safe_filename,
     save_image_from_base64,
 )
 
@@ -39,9 +52,9 @@ logger = logging.getLogger("mcp-tools")
 _session: requests.Session | None = None
 
 
-def get_session() -> requests.Session:
+def get_session() -> requests.Session:  # noqa: PLW0603
     """Получить (или создать) HTTP-сессию с WebUI."""
-    global _session
+    global _session  # noqa: PLW0603
     if _session is None:
         _session = requests.Session()
         _session.headers.update({"Content-Type": "application/json"})
@@ -97,8 +110,6 @@ def register_image_tools(mcp: FastMCP):
             ValueError: Если параметры выходят за допустимые пределы
             RuntimeError: Если SD WebUI не вернул изображения
         """
-        import random
-
         logger.info("🎨 MCP TOOL CALL: generate_image(prompt=%r)", prompt[:80])
 
         # Валидация параметров
@@ -162,14 +173,16 @@ def register_image_tools(mcp: FastMCP):
                 )
                 info_resp.raise_for_status()
                 png_info_text = info_resp.json().get("info", "")
-            except Exception:
-                pass
+            except requests.RequestException as exc:
+                logger.warning("Failed to fetch png-info from WebUI: %s", exc)
+            except Exception as exc:
+                logger.warning("Unexpected error fetching png-info: %s", exc)
 
         # Обработка сгенерированных изображений
         all_results = []
         for img_b64 in images_b64:
             filename = save_image_from_base64(img_b64)
-            thumb_name = make_thumbnail(filename)
+            make_thumbnail(filename)
 
             # Сохраняем метаданные в PNG
             try:
@@ -183,8 +196,10 @@ def register_image_tools(mcp: FastMCP):
                 if description:
                     meta.add_text("Description", description)
                 img.save(img_path, pnginfo=meta)
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.warning("Failed to write PNG metadata for %s: %s", filename, exc)
+            except Exception as exc:
+                logger.warning("Unexpected error writing metadata for %s: %s", filename, exc)
 
             # Формирование URL для доступа к изображениям
             img_url = f"{PUBLIC_BASE_URL}/images/{filename}"
@@ -216,7 +231,7 @@ def register_image_tools(mcp: FastMCP):
     # ------------------------------------------------------------------
     @mcp.tool()
     def upscale_images(
-        file_urls: List[str],
+        file_urls: list[str],  # noqa: UP006
         resize_mode: int = 0,
         upscaling_resize: int = 4,
         upscaling_resize_w: int = 512,
@@ -225,47 +240,101 @@ def register_image_tools(mcp: FastMCP):
         upscaler_2: str = "None",
     ) -> str:
         """
-        Апскейлит изображения через WebUI.
+        Upscale images via SD WebUI (secure: only trusted sources allowed).
 
-        Загружает изображения по URL или локальным путям,
-        отправляет на апскейл в SD WebUI и сохраняет результаты.
+        Accepts images from:
+        - PUBLIC_BASE_URL paths (e.g. http://host:port/images/name.png)
+        - files inside IMAGE_DIR or WEBP_DIR (by filename only)
+
+        Arbitrary external URLs and arbitrary filesystem paths are rejected
+        to prevent SSRF and local file read attacks.
 
         Args:
-            file_urls: Список URL или путей к изображениям
-            resize_mode: Режим изменения размера (0-4)
-            upscaling_resize: Множитель увеличения (по умолчанию 4)
-            upscaling_resize_w: Целевая ширина (по умолчанию 512)
-            upscaling_resize_h: Целевая высота (по умолчанию 512)
-            upscaler_1: Первый апскейлер (по умолчанию "R-ESRGAN 4x+")
-            upscaler_2: Второй апскейлер (по умолчанию "None")
+            file_urls: List of image references (trusted URLs or filenames)
+            resize_mode: Resize mode (0-4)
+            upscaling_resize: Scale multiplier (default 4)
+            upscaling_resize_w: Target width (default 512)
+            upscaling_resize_h: Target height (default 512)
+            upscaler_1: Primary upscaler (default "R-ESRGAN 4x+")
+            upscaler_2: Secondary upscaler (default "None")
 
         Returns:
-            str: Текстовый отчет с URL апскейленных изображений
+            str: Text report with URLs of upscaled images
 
         Raises:
-            RuntimeError: Если WebUI не вернул изображения
+            ValueError: If a source is not from a trusted location
+            RuntimeError: If WebUI returns no images
         """
         logger.info("upscale_images: %d file(s)", len(file_urls))
 
         if not file_urls:
             return "Error: No files provided for upscaling."
 
-        # Загрузка файлов
-        url_pattern = re.compile(r"^https?://")
-        image_list = []
-        original_names = []
+        # --- Trusted-source validation helpers ---
+        _url_prefix = PUBLIC_BASE_URL.rstrip("/")
+
+        def _resolve_trusted_source(url_or_path: str) -> tuple[bytes, str]:
+            """Read image bytes only from trusted sources.
+
+            Returns (image_bytes, original_filename).
+            Raises ValueError for untrusted inputs.
+            """
+            url_or_path = url_or_path.strip()
+
+            if url_or_path.startswith(_url_prefix):
+                # Trusted: URL pointing to our own server
+                suffix = url_or_path[len(_url_prefix):]
+                # Accept /images/<name>, /webp/<name>, /thumbs/<name>
+                allowed_prefixes = ("/images/", "/webp/", "/thumbs/")
+                if not any(suffix.startswith(p) for p in allowed_prefixes):
+                    raise ValueError(f"URL path not allowed: {url_or_path}")
+                filename = Path(suffix).name
+                # Map to correct directory
+                if suffix.startswith("/images/"):
+                    base = IMAGE_DIR
+                elif suffix.startswith("/webp/"):
+                    base = WEBP_DIR
+                else:
+                    base = THUMB_DIR
+                safe_name = safe_filename(filename)
+                if not safe_name:
+                    raise ValueError(f"Invalid filename in URL: {filename}")
+                file_path = (base / safe_name).resolve()
+                if not str(file_path).startswith(str(base.resolve())):
+                    raise ValueError(f"Path traversal detected: {file_path}")
+                if not file_path.is_file():
+                    raise FileNotFoundError(f"File not found: {file_path}")
+                return file_path.read_bytes(), safe_name
+
+            # Check if it looks like a bare filename (no scheme, no path separators)
+            stripped = url_or_path.strip("/")
+            if "/" not in stripped and not url_or_path.startswith(("http://", "https://", "/")):
+                # Treat as filename within IMAGE_DIR
+                safe_name = safe_filename(stripped)
+                if not safe_name:
+                    raise ValueError(f"Invalid filename: {stripped}")
+                file_path = (IMAGE_DIR / safe_name).resolve()
+                if not str(file_path).startswith(str(IMAGE_DIR.resolve())):
+                    raise ValueError(f"Path traversal detected: {file_path}")
+                if not file_path.is_file():
+                    raise FileNotFoundError(f"File not found in IMAGE_DIR: {safe_name}")
+                return file_path.read_bytes(), safe_name
+
+            # Everything else is rejected
+            raise ValueError(
+                f"Untrusted source rejected: {url_or_path}. "
+                f"Only {PUBLIC_BASE_URL} URLs or filenames from IMAGE_DIR are allowed."
+            )
+
+        # Загрузка файлов (только из доверенных источников)
+        image_list: list[dict[str, str]] = []
+        original_names: list[str] = []
         for url_or_path in file_urls:
-            if url_pattern.match(url_or_path):
-                # Загрузка по URL
-                resp = requests.get(url_or_path, timeout=REQUEST_TIMEOUT)
-                resp.raise_for_status()
-                img_data = resp.content
-                name = Path(url_or_path).name
-            else:
-                # Локальный путь
-                p = Path(url_or_path).expanduser().resolve()
-                img_data = p.read_bytes()
-                name = p.name
+            try:
+                img_data, name = _resolve_trusted_source(url_or_path)
+            except (ValueError, FileNotFoundError) as exc:
+                logger.error("upscale_images: rejected source %r: %s", url_or_path, exc)
+                return f"Error: {exc}"
             b64 = base64.b64encode(img_data).decode("utf-8")
             image_list.append({"data": b64, "name": name})
             original_names.append(name)

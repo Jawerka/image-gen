@@ -19,20 +19,32 @@
 """
 
 import logging
+import os
+import threading
 import time
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastmcp import FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.settings import (
-    IMAGE_DIR, THUMB_DIR, WEBP_DIR, PUBLIC_BASE_URL, WEB_HOST, WEB_PORT, MCP_TIMEOUT
+    IMAGE_DIR,
+    MAX_SESSIONS,
+    MCP_TIMEOUT,
+    PUBLIC_BASE_URL,
+    SESSION_MAX_AGE_SECONDS,
+    THUMB_DIR,
+    WEB_HOST,
+    WEB_PORT,
+    WEBP_DIR,
+    validate_settings,
 )
-from app.utils import safe_filename, get_file_info, cleanup_old_files, extract_image_metadata, ensure_webp
-from app.web_server import generate_gallery_html, _build_image_data_list
-from fastmcp import FastMCP
 from app.tools import register_image_tools
+from app.utils import cleanup_old_files, get_file_info, safe_filename
+from app.web_server import _build_image_data_list, generate_gallery_html
 
 # ---------------------------------------------------------------------------
 # Логирование
@@ -48,9 +60,8 @@ logger = logging.getLogger("image-server")
 # ---------------------------------------------------------------------------
 # MCP сервер
 # ---------------------------------------------------------------------------
-# Импорт необходим для настройки порта через переменную окружения
-# FastMCP v3.x больше не принимает port в конструкторе
-import os
+# FastMCP v3.x больше не принимает port в конструкторе,
+# поэтому настраиваем через переменную окружения ДО создания инстанса.
 os.environ["FASTMCP_PORT"] = str(WEB_PORT + 1)
 
 # Создание MCP сервера с именем "image-gen-pro"
@@ -68,13 +79,31 @@ register_image_tools(mcp)
 # ---------------------------------------------------------------------------
 class MCPConnectionLogger(BaseHTTPMiddleware):
     """Middleware для логирования подключений и запросов к MCP endpoint."""
-    
+
     def __init__(self, app, mcp_logger):
         super().__init__(app)
         self.logger = mcp_logger
-        # Отслеживаем активные сессии
-        self.active_sessions = {}
-    
+        # Отслеживаем активные сессии с ограничением размера
+        self.active_sessions: dict[str, dict] = {}
+
+    def _prune_expired_sessions(self) -> None:
+        """Удалить сессии старше SESSION_MAX_AGE_SECONDS и ограничить размер."""
+        now = time.time()
+        expired = [
+            sid for sid, info in self.active_sessions.items()
+            if now - info.get("last_request", info.get("connected_at", 0)) > SESSION_MAX_AGE_SECONDS
+        ]
+        for sid in expired:
+            self.active_sessions.pop(sid, None)
+        # Если всё ещё слишком много — удалить самые старые по connected_at
+        if len(self.active_sessions) > MAX_SESSIONS:
+            sorted_sessions = sorted(
+                self.active_sessions.items(),
+                key=lambda x: x[1].get("connected_at", 0),
+            )
+            for sid, _ in sorted_sessions[: len(self.active_sessions) - MAX_SESSIONS]:
+                self.active_sessions.pop(sid, None)
+
     async def dispatch(self, request: Request, call_next):
         # Логируем только запросы к MCP endpoint
         if request.url.path.startswith("/mcp"):
@@ -82,10 +111,10 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
             client_port = request.client.port if request.client else 0
             method = request.method
             path = request.url.path
-            
+
             # Получаем session ID из заголовков (если есть)
             session_id = request.headers.get("mcp-session-id", "no-session")
-            
+
             # Логируем новые подключения (POST без session ID = инициализация)
             if method == "POST" and session_id == "no-session":
                 self.logger.info(
@@ -93,40 +122,44 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
                     client_host, client_port
                 )
             elif session_id != "no-session":
+                # Периодически очищаем просроченные сессии
+                if len(self.active_sessions) % 20 == 0:
+                    self._prune_expired_sessions()
+
                 # Отслеживаем активные сессии
                 if session_id not in self.active_sessions:
                     self.active_sessions[session_id] = {
                         "client": f"{client_host}:{client_port}",
                         "connected_at": time.time(),
-                        "request_count": 0
+                        "request_count": 0,
                     }
                     self.logger.info(
                         "🔑 NEW MCP SESSION: %s from %s:%d",
-                        session_id[:16], client_host, client_port
+                        session_id[:16], client_host, client_port,
                     )
                 else:
                     self.active_sessions[session_id]["request_count"] += 1
                     self.active_sessions[session_id]["last_request"] = time.time()
-                
+
                 # Логируем запросы к инструментам
-                if session_id in self.active_sessions:
-                    sess = self.active_sessions[session_id]
+                sess = self.active_sessions.get(session_id)
+                if sess:
                     self.logger.debug(
                         "📨 MCP REQUEST session=%s... requests=%d from %s",
-                        session_id[:16], sess["request_count"], client_host
+                        session_id[:16], sess["request_count"], client_host,
                     )
-            
+
             # Замеряем время выполнения
             start_time = time.time()
             response = await call_next(request)
             duration = time.time() - start_time
-            
+
             # Логируем ответ
             self.logger.info(
                 "📤 MCP RESPONSE: %s %s -> %d (%.2fs) from %s",
                 method, path, response.status_code, duration, client_host
             )
-            
+
             # Логируем отключения (ошибки сессии)
             if response.status_code >= 400:
                 self.logger.warning(
@@ -135,7 +168,7 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
                 )
         else:
             response = await call_next(request)
-        
+
         return response
 
 
@@ -281,14 +314,21 @@ def get_gallery(limit: int = 50):
         JSONResponse: Список изображений с URL и метаданными (prompt, negative, params, description)
     """
     images = []
+    image_dir_resolved = IMAGE_DIR.resolve()
     for f in sorted(IMAGE_DIR.rglob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
         if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
-            # Skip files inside the thumbs directory
-            if str(f).startswith(str(THUMB_DIR)):
+            # Skip files inside the thumbs/webp directories
+            resolved = f.resolve()
+            if str(resolved).startswith(str(THUMB_DIR.resolve())):
                 continue
+            if str(resolved).startswith(str(WEBP_DIR.resolve())):
+                continue
+            # Относительный путь от IMAGE_DIR — защищает от коллизий имён в подкаталогах
+            rel_path = resolved.relative_to(image_dir_resolved)
             info = get_file_info(f.name)
             if info:
-                info["url"] = f"{PUBLIC_BASE_URL}/images/{f.name}"
+                # URL-кодируем относительный путь для корректной работы с подкаталогами
+                info["url"] = f"{PUBLIC_BASE_URL}/images/{rel_path}"
                 thumb_name = f.stem + ".jpg"
                 thumb_path = THUMB_DIR / thumb_name
                 if thumb_path.exists():
@@ -344,8 +384,6 @@ def index():
 # ---------------------------------------------------------------------------
 # Запуск — два сервера: MCP (Streamable HTTP) + Web (FastAPI)
 # ---------------------------------------------------------------------------
-import threading
-import uvicorn
 
 
 def run_mcp_server():
@@ -355,7 +393,7 @@ def run_mcp_server():
     Этот метод запускается в отдельном потоке и обслуживает
     запросы от LLM-клиентов через MCP протокол.
     """
-    logger.info("Starting MCP server on port %d (Streamable HTTP, timeout=%ds)", 
+    logger.info("Starting MCP server on port %d (Streamable HTTP, timeout=%ds)",
                 WEB_PORT + 1, MCP_TIMEOUT)
     mcp.run(transport="streamable-http", host=WEB_HOST, port=WEB_PORT + 1)
 
@@ -367,6 +405,9 @@ def main():
     Запускает MCP сервер в отдельном потоке и Web сервер в главном потоке.
     MCP сервер работает как daemon, поэтому завершается вместе с основным процессом.
     """
+    # Проверяем согласованность настроек перед запуском
+    validate_settings()
+
     logger.info("Starting Image MCP Server")
     logger.info("MCP endpoint: http://%s:%d/mcp", WEB_HOST, WEB_PORT + 1)
     logger.info("Gallery: http://%s:%d/", WEB_HOST, WEB_PORT)

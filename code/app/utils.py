@@ -1,41 +1,42 @@
 """
-Утилиты для работы с изображениями и файлами.
+Utility functions for working with images and files.
 
-Этот модуль содержит вспомогательные функции для:
-- Генерации уникальных имен файлов
-- Безопасной обработки имен файлов
-- Сохранения изображений из base64
-- Создания превью (thumbnails)
-- Очистки старых файлов
-- Получения метаданных файлов
+This module contains helper functions for:
+- Generating unique filenames
+- Safe filename processing
+- Saving images from base64
+- Creating thumbnails
+- Cleaning up old files
+- Extracting image metadata
 """
 
-import uuid
-import time
 import logging
+import time
+import uuid
 from pathlib import Path
+
 from PIL import Image
-from io import BytesIO
-from app.settings import IMAGE_DIR, THUMB_DIR, WEBP_DIR, IMAGE_RETENTION_DAYS
+
+from app.settings import IMAGE_DIR, IMAGE_RETENTION_DAYS, THUMB_DIR, WEBP_DIR
 
 logger = logging.getLogger(__name__)
 
 
 def generate_filename(prefix: str = "sd", extension: str = "png") -> str:
     """
-    Создать уникальное имя файла с UUID.
+    Generate a unique filename with UUID.
 
-    Генерирует имя файла в формате: {prefix}_{uuid}.{extension}
-    Это гарантирует уникальность имен файлов даже при параллельной генерации.
+    Generates filename in format: {prefix}_{uuid}.{extension}
+    This guarantees uniqueness even with parallel generation.
 
     Args:
-        prefix: Префикс имени файла (по умолчанию "sd")
-        extension: Расширение файла (по умолчанию "png")
+        prefix: Filename prefix (default "sd")
+        extension: File extension (default "png")
 
     Returns:
-        str: Уникальное имя файла
+        str: Unique filename
 
-    Пример:
+    Example:
         >>> generate_filename("test", "jpg")
         'test_a1b2c3d4e5f6.jpg'
     """
@@ -44,33 +45,33 @@ def generate_filename(prefix: str = "sd", extension: str = "png") -> str:
 
 def safe_filename(filename: str) -> str:
     """
-    Проверить и очистить имя файла от опасных символов.
+    Check and sanitize filename from dangerous characters.
 
-    Предотвращает path traversal атаки и другие попытки доступа
-    к файлам вне разрешенных директорий.
+    Prevents path traversal attacks and other attempts to access
+    files outside allowed directories.
 
-    Разрешенные символы:
-        - Буквы латинского алфавита (a-z, A-Z)
-        - Цифры (0-9)
-        - Подчеркивание (_)
-        - Дефис (-)
-        - Точка (.)
+    Allowed characters:
+        - Latin letters (a-z, A-Z)
+        - Digits (0-9)
+        - Underscores (_)
+        - Hyphens (-)
+        - Dot (.)
 
     Args:
-        filename: Имя файла для проверки
+        filename: Filename to check
 
     Returns:
-        str: Очищенное имя файла или пустая строка если недопустимо
+        str: Sanitized filename or empty string if invalid
 
-    Пример:
+    Example:
         >>> safe_filename("../../../etc/passwd")
         ''
         >>> safe_filename("image_001.png")
         'image_001.png'
     """
-    # Убираем любые path traversal попытки
+    # Remove any path traversal attempts
     safe = Path(filename).name
-    # Разрешаем только буквенно-цифровые символы, точки и подчёркивания
+    # Allow only alphanumeric characters, dots and underscores
     allowed_chars = set(
         "abcdefghijklmnopqrstuvwxyz"
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -82,16 +83,16 @@ def safe_filename(filename: str) -> str:
 
 def save_image(data: bytes, filename: str | None = None) -> str:
     """
-    Сохранить изображение в папку IMAGE_DIR.
+    Save image to IMAGE_DIR.
 
     Args:
-        data: Бинарные данные изображения
-        filename: Имя файла (если None, генерируется автоматически)
+        data: Binary image data
+        filename: Filename (if None, generated automatically)
 
     Returns:
-        str: Имя сохраненного файла
+        str: Saved filename
 
-    Пример:
+    Example:
         >>> save_image(b"...", "my_image.png")
         'my_image.png'
     """
@@ -106,29 +107,28 @@ def save_image(data: bytes, filename: str | None = None) -> str:
 
 def save_image_from_base64(b64_data: str, filename: str | None = None) -> str:
     """
-    Декодировать base64 и сохранить изображение.
+    Decode base64 and save image.
 
-    Поддерживает два формата:
-        - Чистый base64: "iVBORw0KGgoAAAANSUhEUg..."
+    Supports two formats:
+        - Clean base64: "iVBORw0KGgoAAAANSUhEUg..."
         - Data URL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg..."
 
     Args:
-        b64_data: Base64-encoded строка с изображением
-        filename: Имя файла (если None, генерируется автоматически)
+        b64_data: Base64-encoded image string
+        filename: Filename (if None, generated automatically)
 
     Returns:
-        str: Имя сохраненного файла
+        str: Saved filename
 
-    Пример:
+    Example:
         >>> save_image_from_base64("iVBORw0KGgoAAAANSUhEUg...")
         'sd_a1b2c3d4e5f6.png'
     """
-    import base64
     if "," in b64_data:
         _, b64 = b64_data.split(",", 1)
     else:
         b64 = b64_data
-    img_bytes = base64.b64decode(b64)
+    img_bytes = __import__("base64").b64decode(b64)
     return save_image(img_bytes, filename)
 
 
@@ -138,20 +138,20 @@ def make_thumbnail(
     quality: int = 85,
 ) -> str | None:
     """
-    Создать JPEG-превью для изображения.
+    Create JPEG thumbnail for image.
 
-    Создает уменьшенную копию изображения с сохранением пропорций.
-    Превью всегда сохраняется в формате JPEG с заданным качеством.
+    Creates a resized copy of the image preserving aspect ratio.
+    Thumbnail is always saved as JPEG with given quality.
 
     Args:
-        filename: Имя оригинального файла
-        max_size: Максимальный размер превью (по умолчанию 512x512)
-        quality: Качество JPEG (1-100, по умолчанию 85)
+        filename: Original filename
+        max_size: Maximum thumbnail size (default 512x512)
+        quality: JPEG quality (1-100, default 85)
 
     Returns:
-        str | None: Имя превью или None при ошибке
+        str | None: Thumbnail filename or None on error
 
-    Пример:
+    Example:
         >>> make_thumbnail("image.png")
         'image.jpg'
     """
@@ -160,18 +160,18 @@ def make_thumbnail(
         logger.error("Cannot create thumbnail: %s not found", src)
         return None
 
-    # Превью всегда JPEG
+    # Thumbnail always JPEG
     thumb_name = Path(filename).stem + ".jpg"
     dst = THUMB_DIR / thumb_name
 
     try:
         with Image.open(src) as img:
-            # Уменьшаем размер с сохранением пропорций
+            # Resize preserving aspect ratio
             img.thumbnail(max_size)
-            # Конвертируем RGBA в RGB для JPEG
+            # Convert RGBA to RGB for JPEG
             if img.mode in ("RGBA", "P", "LA"):
-                img = img.convert("RGB")
-            # Сохраняем как JPEG
+                img = img.convert("RGB")  # noqa: PLW2901
+            # Save as JPEG
             img.save(dst, "JPEG", quality=quality)
 
         logger.info("Created thumbnail: %s", thumb_name)
@@ -183,46 +183,46 @@ def make_thumbnail(
 
 def ensure_webp(filename: str, quality: int = 80) -> str | None:
     """
-    Обеспечить наличие WebP-копии изображения.
+    Ensure presence of WebP copy of image.
 
-    Проверяет наличие WebP-копии в кэше. Если нет, загружает оригинальное
-    изображение, конвертирует в WebP и сохраняет.
+    Checks for WebP copy in cache. If not present, loads original
+    image, converts to WebP and saves.
 
     Args:
-        filename: Имя оригинального файла (png, jpg, jpeg)
-        quality: Качество WebP 1-100 (по умолчанию 80 — хороший баланс размер/качество)
+        filename: Original filename (png, jpg, jpeg)
+        quality: WebP quality 1-100 (default 80 - good balance size/quality)
 
     Returns:
-        str | None: Имя WebP-файла (без пути) или None при ошибке
+        str | None: WebP filename (without path) or None on error
 
-    Пример:
+    Example:
         >>> ensure_webp("image.png")
         'image.webp'
     """
-    # Определяем имя WebP-файла
+    # Determine WebP filename
     webp_name = Path(filename).stem + ".webp"
     webp_path = WEBP_DIR / webp_name
     src_path = IMAGE_DIR / filename
 
-    # Проверяем, есть ли уже WebP-копия
+    # Check if WebP copy already exists
     if webp_path.exists():
-        # Если оригинал новее WebP-копии — перегенерируем
+        # If original is newer than WebP copy - regenerate
         if src_path.exists() and src_path.stat().st_mtime > webp_path.stat().st_mtime:
             logger.info("WebP cache stale for %s, regenerating", filename)
         else:
             return webp_name
 
-    # Проверяем наличие оригинала
+    # Check original existence
     if not src_path.exists():
         logger.error("Cannot create WebP: %s not found", src_path)
         return None
 
     try:
         with Image.open(src_path) as img:
-            # Конвертируем RGBA в RGB если необходимо (WebP поддерживает RGBA, но для совместимости)
+            # Convert RGBA to RGB if needed
             if img.mode in ("P", "LA"):
-                img = img.convert("RGBA")
-            # Сохраняем как WebP
+                img = img.convert("RGBA")  # noqa: PLW2901
+            # Save as WebP
             img.save(webp_path, "WEBP", quality=quality)
 
         logger.info("Created WebP: %s", webp_name)
@@ -234,20 +234,20 @@ def ensure_webp(filename: str, quality: int = 80) -> str | None:
 
 def cleanup_old_files() -> int:
     """
-    Удалить файлы старше IMAGE_RETENTION_DAYS дней.
+    Delete files older than IMAGE_RETENTION_DAYS days.
 
-    Удаляет файлы из IMAGE_DIR и THUMB_DIR, которые старше
-    заданного срока хранения (IMAGE_RETENTION_DAYS).
+    Deletes files from IMAGE_DIR and THUMB_DIR that are older
+    than the specified retention period.
 
     Returns:
-        int: Количество удаленных файлов
+        int: Number of deleted files
 
-    Пример:
+    Example:
         >>> cleanup_old_files()
         5
     """
     now = time.time()
-    cutoff = now - (IMAGE_RETENTION_DAYS * 86400)  # 86400 секунд в сутках
+    cutoff = now - (IMAGE_RETENTION_DAYS * 86400)  # 86400 seconds in a day
     removed = 0
 
     for directory in (IMAGE_DIR, THUMB_DIR, WEBP_DIR):
@@ -266,23 +266,23 @@ def cleanup_old_files() -> int:
 
 def extract_image_metadata(img_path: Path) -> dict | None:
     """
-    Извлечь метаданные из изображения (prompt, negative prompt, parameters, description).
+    Extract metadata from image (prompt, negative prompt, parameters, description).
 
-    Универсальный парсер: поддерживает стандартные PNG parameters от SD WebUI,
-    а также кастомное поле Description (может содержать prompt/negative/params).
+    Universal parser: supports standard PNG parameters from SD WebUI,
+    as well as custom Description field.
 
     Args:
-        img_path: Путь к файлу изображения
+        img_path: Path to image file
 
     Returns:
-        dict | None: Словарь с метаданными или None при ошибке
+        dict | None: Dictionary with metadata or None on error
     """
     try:
         with Image.open(img_path) as img:
             parameters_raw = img.info.get("parameters", "").strip()
             description_raw = img.info.get("Description", "").strip()
 
-            # Если есть стандартные parameters — парсим их
+            # If standard parameters exist - parse them
             if parameters_raw:
                 lines = parameters_raw.splitlines()
                 prompt_lines = []
@@ -290,23 +290,23 @@ def extract_image_metadata(img_path: Path) -> dict | None:
                 other_lines = []
                 in_negative = False
 
-                for line in lines:
-                    line = line.strip()
-                    if not line:
+                for raw_line in lines:
+                    stripped_line = raw_line.strip()
+                    if not stripped_line:
                         continue
 
-                    if line.lower().startswith("negative prompt:"):
+                    if stripped_line.lower().startswith("negative prompt:"):
                         in_negative = True
-                        negative_prompt = line.split(":", 1)[1].strip()
-                    elif in_negative and ":" not in line:
-                        negative_prompt += ", " + line
-                    elif in_negative and ":" in line:
+                        negative_prompt = stripped_line.split(":", 1)[1].strip()
+                    elif in_negative and ":" not in stripped_line:
+                        negative_prompt += ", " + stripped_line
+                    elif in_negative and ":" in stripped_line:
                         in_negative = False
-                        other_lines.append(line)
-                    elif not in_negative and ":" not in line:
-                        prompt_lines.append(line)
+                        other_lines.append(stripped_line)
+                    elif not in_negative and ":" not in stripped_line:
+                        prompt_lines.append(stripped_line)
                     else:
-                        other_lines.append(line)
+                        other_lines.append(stripped_line)
 
                 processed_other_lines = "\n".join(other_lines)
                 if "Steps:" in processed_other_lines:
@@ -322,7 +322,7 @@ def extract_image_metadata(img_path: Path) -> dict | None:
                     "description": description_raw,
                 }
 
-            # Если нет parameters, но есть Description — пробуем распарсить Description
+            # If no parameters but Description exists - try to parse Description
             if description_raw:
                 lines = description_raw.splitlines()
                 prompt_lines = []
@@ -330,23 +330,23 @@ def extract_image_metadata(img_path: Path) -> dict | None:
                 other_lines = []
                 in_negative = False
 
-                for line in lines:
-                    line = line.strip()
-                    if not line:
+                for raw_line in lines:
+                    stripped_line = raw_line.strip()
+                    if not stripped_line:
                         continue
 
-                    if line.lower().startswith("negative prompt:"):
+                    if stripped_line.lower().startswith("negative prompt:"):
                         in_negative = True
-                        negative_prompt = line.split(":", 1)[1].strip()
-                    elif in_negative and ":" not in line:
-                        negative_prompt += ", " + line
-                    elif in_negative and ":" in line:
+                        negative_prompt = stripped_line.split(":", 1)[1].strip()
+                    elif in_negative and ":" not in stripped_line:
+                        negative_prompt += ", " + stripped_line
+                    elif in_negative and ":" in stripped_line:
                         in_negative = False
-                        other_lines.append(line)
-                    elif not in_negative and ":" not in line:
-                        prompt_lines.append(line)
+                        other_lines.append(stripped_line)
+                    elif not in_negative and ":" not in stripped_line:
+                        prompt_lines.append(stripped_line)
                     else:
-                        other_lines.append(line)
+                        other_lines.append(stripped_line)
 
                 processed_other_lines = "\n".join(other_lines)
                 if "Steps:" in processed_other_lines:
@@ -362,7 +362,7 @@ def extract_image_metadata(img_path: Path) -> dict | None:
                     "description": "",
                 }
 
-            # Нет ни parameters, ни Description
+            # Neither parameters nor Description
             return {
                 "prompt": "",
                 "negative": "",
@@ -371,21 +371,21 @@ def extract_image_metadata(img_path: Path) -> dict | None:
             }
 
     except Exception as e:
-        logger.error("Ошибка при извлечении метаданных из %s: %s", img_path, e)
+        logger.error("Error extracting metadata from %s: %s", img_path, e)
         return None
 
 
 def get_file_info(filename: str) -> dict | None:
     """
-    Получить информацию о файле изображения включая метаданные PNG.
+    Get information about image file including PNG metadata.
 
     Args:
-        filename: Имя файла
+        filename: Filename
 
     Returns:
-        dict | None: Словарь с метаданными или None если файл не найден
+        dict | None: Dictionary with metadata or None if file not found
 
-    Пример:
+    Example:
         >>> get_file_info("image.png")
         {
             'filename': 'image.png',
@@ -409,7 +409,7 @@ def get_file_info(filename: str) -> dict | None:
         "modified": stat.st_mtime,
     }
 
-    # Извлекаем метаданные изображения (prompt, negative, params, description)
+    # Extract image metadata (prompt, negative, params, description)
     meta = extract_image_metadata(path)
     if meta:
         base_info.update(meta)

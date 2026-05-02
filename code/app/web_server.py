@@ -12,7 +12,7 @@ import time
 from string import Template
 
 from app.settings import IMAGE_DIR, THUMB_DIR, WEBP_DIR
-from app.utils import extract_image_metadata, ensure_webp
+from app.utils import ensure_webp, extract_image_metadata
 
 logger = logging.getLogger(__name__)
 
