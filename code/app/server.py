@@ -20,9 +20,11 @@
 
 import logging
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -149,9 +151,15 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
                         session_id[:16], sess["request_count"], client_host,
                     )
 
-            # Замеряем время выполнения
+            # Замеряем время выполнения - единственный вызов call_next
             start_time = time.time()
-            response = await call_next(request)
+            
+            try:
+                response = await call_next(request)
+            except Exception as e:
+                self.logger.exception("MCP Request failed")
+                raise
+            
             duration = time.time() - start_time
 
             # Логируем ответ
@@ -169,8 +177,7 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
             
             return response
         else:
-            response = await call_next(request)
-            return response
+            return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +189,18 @@ app = FastAPI(title="Image MCP Server")
 # Добавляем middleware для логирования MCP подключений
 mcp_logger = logging.getLogger("mcp-connections")
 app.add_middleware(MCPConnectionLogger, mcp_logger=mcp_logger)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Проверка и создание необходимых директорий при запуске.
+    """
+    for path in [IMAGE_DIR, THUMB_DIR, WEBP_DIR]:
+        path.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            raise RuntimeError(f"Failed to create {path}")
+        logger.info("Directory ready: %s", path)
 
 
 def _resolve_path(base: Path, filename: str) -> Path:
@@ -213,12 +232,14 @@ def health():
     Проверка работоспособности сервера.
 
     Возвращает:
-        dict: Статус сервера и пути к директориям
+        dict: Статус сервера, пути к директориям и информацию о диске
     """
+    total, used, free = shutil.disk_usage("/")
     return {
         "status": "ok",
         "images_dir": str(IMAGE_DIR),
         "thumb_dir": str(THUMB_DIR),
+        "disk_free_mb": free // (1024 * 1024),
     }
 
 
@@ -231,13 +252,16 @@ def get_image(filename: str):
         filename: Имя файла изображения
 
     Returns:
-        FileResponse: Файл изображения
+        FileResponse: Файл изображения с кэш-заголовками
         JSONResponse: Ошибка 404 если файл не найден
     """
     path = _resolve_path(IMAGE_DIR, filename)
     if not path.exists():
         return JSONResponse({"error": "Image not found"}, status_code=404)
-    return FileResponse(path)
+    return FileResponse(
+        path,
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
 
 
 @app.get("/thumbs/{filename}")
@@ -251,7 +275,7 @@ def get_thumbnail(filename: str):
         filename: Имя оригинального файла
 
     Returns:
-        FileResponse: Файл превью
+        FileResponse: Файл превью с кэш-заголовками
         JSONResponse: Ошибка 404 если превью не найдено
     """
     path = _resolve_path(THUMB_DIR, filename)
@@ -262,7 +286,10 @@ def get_thumbnail(filename: str):
             path = png_path
         else:
             return JSONResponse({"error": "Thumbnail not found"}, status_code=404)
-    return FileResponse(path)
+    return FileResponse(
+        path,
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
 
 
 @app.get("/webp/{filename}")
@@ -276,13 +303,17 @@ def get_webp(filename: str):
         filename: Имя WebP файла
 
     Returns:
-        FileResponse: Файл WebP с media_type image/webp
+        FileResponse: Файл WebP с media_type image/webp и кэш-заголовками
         JSONResponse: Ошибка 404 если файл не найден
     """
     path = _resolve_path(WEBP_DIR, filename)
     if not path.exists():
         return JSONResponse({"error": "WebP not found"}, status_code=404)
-    return FileResponse(path, media_type="image/webp")
+    return FileResponse(
+        path,
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
 
 
 @app.get("/meta/{filename}")
@@ -336,15 +367,17 @@ def get_gallery(limit: int = 50):
                 continue
             # Относительный путь от IMAGE_DIR — защищает от коллизий имён в подкаталогах
             rel_path = resolved.relative_to(image_dir_resolved)
-            # Use relative path for metadata lookup to support subdirectories
-            info = get_file_info(str(rel_path))
+            # Нормализация пути (замена обратных слешей на прямые)
+            rel_path_str = str(rel_path).replace("\\", "/")
+            # Use full path for metadata lookup to avoid collisions
+            info = get_file_info(f)
             if info:
                 # URL-кодируем относительный путь для корректной работы с подкаталогами
-                info["url"] = f"{PUBLIC_BASE_URL}/images/{rel_path}"
+                info["url"] = f"{PUBLIC_BASE_URL}/images/{quote(rel_path_str)}"
                 thumb_name = f.stem + ".jpg"
                 thumb_path = THUMB_DIR / thumb_name
                 if thumb_path.exists():
-                    info["thumb_url"] = f"{PUBLIC_BASE_URL}/thumbs/{thumb_name}"
+                    info["thumb_url"] = f"{PUBLIC_BASE_URL}/thumbs/{quote(thumb_name)}"
                 images.append(info)
                 if len(images) >= limit:
                     break
@@ -371,10 +404,11 @@ def cleanup():
     Удалить старые файлы (старше IMAGE_RETENTION_DAYS дней).
 
     Returns:
-        dict: Количество удаленных файлов
+        dict: Статистика удаления
     """
-    removed = cleanup_old_files()
-    return {"removed": removed}
+    from app.settings import IMAGE_RETENTION_DAYS
+    deleted = cleanup_old_files()
+    return {"status": "ok", "deleted": deleted, "retention_days": IMAGE_RETENTION_DAYS}
 
 
 @app.get("/")

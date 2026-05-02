@@ -14,6 +14,7 @@ import base64
 import logging
 import random
 from pathlib import Path
+from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -44,6 +45,10 @@ from app.utils import (
     safe_filename,
     save_image_from_base64,
 )
+
+# Constants
+MAX_UPSCALE_FILES = 10
+MAX_FILE_SIZE_MB = 10
 
 logger = logging.getLogger("mcp-tools")
 
@@ -118,8 +123,12 @@ def register_image_tools(mcp: FastMCP):
             raise ValueError("steps must be in range 1 to 150")
         if not (512 <= width <= 2048):
             raise ValueError("width must be in range 512 to 2048")
+        if width % 8 != 0:
+            raise ValueError("width must be multiple of 8")
         if not (512 <= height <= 2048):
             raise ValueError("height must be in range 512 to 2048")
+        if height % 8 != 0:
+            raise ValueError("height must be multiple of 8")
         if not (1 <= cfg_scale <= 30):
             raise ValueError("cfg_scale must be in range 1 to 30")
 
@@ -270,6 +279,10 @@ def register_image_tools(mcp: FastMCP):
 
         if not file_urls:
             return "Error: No files provided for upscaling."
+        
+        # Limit number of files
+        if len(file_urls) > MAX_UPSCALE_FILES:
+            raise ValueError(f"Too many files. Maximum is {MAX_UPSCALE_FILES}")
 
         # --- Trusted-source validation helpers ---
         def _is_trusted_url(url: str) -> bool:
@@ -365,6 +378,11 @@ def register_image_tools(mcp: FastMCP):
             except (ValueError, FileNotFoundError) as exc:
                 logger.error("upscale_images: rejected source %r: %s", url_or_path, exc)
                 return f"Error: {exc}"
+            
+            # Check file size
+            if len(img_data) > MAX_FILE_SIZE_MB * 1024 * 1024:
+                raise ValueError(f"File too large. Maximum is {MAX_FILE_SIZE_MB}MB")
+            
             b64 = base64.b64encode(img_data).decode("utf-8")
             image_list.append({"data": b64, "name": name})
             original_names.append(name)
@@ -397,6 +415,7 @@ def register_image_tools(mcp: FastMCP):
         upscaled_b64_list = resp.json().get("images", [])
 
         if not upscaled_b64_list:
+            logger.error("No images returned from upscaling endpoint")
             raise RuntimeError("No images returned from upscaling endpoint")
 
         # Обработка результатов

@@ -247,8 +247,8 @@ def cleanup_old_files() -> int:
     """
     Delete files older than IMAGE_RETENTION_DAYS days.
 
-    Deletes files from IMAGE_DIR and THUMB_DIR that are older
-    than the specified retention period.
+    Recursively scans IMAGE_DIR, THUMB_DIR, and WEBP_DIR for files
+    older than the specified retention period.
 
     Returns:
         int: Number of deleted files
@@ -262,14 +262,14 @@ def cleanup_old_files() -> int:
     removed = 0
 
     for directory in (IMAGE_DIR, THUMB_DIR, WEBP_DIR):
-        for filepath in directory.iterdir():
+        for filepath in directory.rglob("*"):
             if filepath.is_file() and filepath.stat().st_mtime < cutoff:
                 try:
                     filepath.unlink()
                     removed += 1
-                    logger.info("Deleted old file: %s", filepath)
+                    logger.debug("Deleted old file: %s", filepath)
                 except OSError as e:
-                    logger.error("Failed to delete %s: %s", filepath, e)
+                    logger.exception("Failed to delete %s: %s", filepath, e)
 
     logger.info("Cleanup complete: %d files removed", removed)
     return removed
@@ -408,12 +408,12 @@ def resolve_image_path(filename: str) -> Path:
     return path
 
 
-def get_file_info(filename: str) -> dict | None:
+def get_file_info(path: Path | str) -> dict | None:
     """
     Get information about image file including PNG metadata.
 
     Args:
-        filename: Filename or relative path (e.g., "image.png" or "subdir/image.png")
+        path: Path object or string filename/relative path to image
 
     Returns:
         dict | None: Dictionary with metadata or None if file not found
@@ -421,30 +421,32 @@ def get_file_info(filename: str) -> dict | None:
     Example:
         >>> get_file_info("image.png")
         {
-            'filename': 'image.png',
-            'size_bytes': 123456,
-            'created': 1714567890.123,
-            'modified': 1714567890.123,
+            'name': 'image.png',
+            'size': 123456,
+            'mtime': 1714567890.123,
             'prompt': 'a beautiful cat',
             'negative': 'blurry, low quality',
             'params': 'Steps: 20, Sampler: Euler a, ...',
             'description': 'My generated image'
         }
     """
-    try:
-        path = resolve_image_path(filename)
-    except ValueError:
-        return None
+    if isinstance(path, str):
+        try:
+            path = resolve_image_path(path)
+        except ValueError:
+            return None
+    
+    if not isinstance(path, Path):
+        path = Path(path)
     
     if not path.exists():
         return None
         
     stat = path.stat()
     base_info = {
-        "filename": filename,
-        "size_bytes": stat.st_size,
-        "created": stat.st_ctime,
-        "modified": stat.st_mtime,
+        "name": path.name,
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
     }
 
     # Extract image metadata (prompt, negative, params, description)
@@ -453,3 +455,26 @@ def get_file_info(filename: str) -> dict | None:
         base_info.update(meta)
 
     return base_info
+
+
+def safe_open_image(path: Path) -> Image.Image:
+    """
+    Safely open and verify an image file.
+
+    Args:
+        path: Path to image file
+
+    Returns:
+        Image.Image: Verified PIL Image object
+
+    Raises:
+        ValueError: If image is invalid or corrupted
+    """
+    try:
+        img = Image.open(path)
+        img.verify()  # Verify integrity
+        # Need to reopen after verify
+        img = Image.open(path)
+        return img
+    except Exception as e:
+        raise ValueError(f"Invalid image: {path}") from e
