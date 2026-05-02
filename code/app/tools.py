@@ -243,207 +243,143 @@ def register_image_tools(mcp: FastMCP):
     def upscale_images(
         file_urls: list[str],  # noqa: UP006
         resize_mode: int = 0,
-        upscaling_resize: int = 4,
+        upscaling_resize: int = 2,
         upscaling_resize_w: int = 512,
         upscaling_resize_h: int = 512,
         upscaler_1: str = "R-ESRGAN 4x+",
         upscaler_2: str = "None",
     ) -> str:
         """
-        Upscale images via SD WebUI (secure: only trusted sources allowed).
+        Upscale images via SD WebUI using /sdapi/v1/extra-single-image.
 
-        Accepts images from:
+        Accepts only trusted sources:
         - PUBLIC_BASE_URL paths (e.g. http://host:port/images/name.png)
-        - files inside IMAGE_DIR or WEBP_DIR (by filename only)
-
-        Arbitrary external URLs and arbitrary filesystem paths are rejected
-        to prevent SSRF and local file read attacks.
-
-        Args:
-            file_urls: List of image references (trusted URLs or filenames)
-            resize_mode: Resize mode (0-4)
-            upscaling_resize: Scale multiplier (default 4)
-            upscaling_resize_w: Target width (default 512)
-            upscaling_resize_h: Target height (default 512)
-            upscaler_1: Primary upscaler (default "R-ESRGAN 4x+")
-            upscaler_2: Secondary upscaler (default "None")
-
-        Returns:
-            str: Text report with URLs of upscaled images
-
-        Raises:
-            ValueError: If a source is not from a trusted location
-            RuntimeError: If WebUI returns no images
+        - bare filenames from IMAGE_DIR
         """
         logger.info("upscale_images: %d file(s)", len(file_urls))
 
         if not file_urls:
             return "Error: No files provided for upscaling."
-        
-        # Limit number of files
-        if len(file_urls) > MAX_UPSCALE_FILES:
-            raise ValueError(f"Too many files. Maximum is {MAX_UPSCALE_FILES}")
 
-        # --- Trusted-source validation helpers ---
-        def _is_trusted_url(url: str) -> bool:
-            """Check if URL matches PUBLIC_BASE_URL by parsing scheme, host, and port."""
-            try:
-                parsed = urlparse(url)
-                parsed_ref = urlparse(PUBLIC_BASE_URL)
-                
-                # Must have same scheme, hostname, and port
-                if parsed.scheme != parsed_ref.scheme:
-                    return False
-                if parsed.hostname != parsed_ref.hostname:
-                    return False
-                
-                # Handle ports (default ports for schemes)
-                url_port = parsed.port or (80 if parsed.scheme == "http" else 443 if parsed.scheme == "https" else None)
-                ref_port = parsed_ref.port or (80 if parsed_ref.scheme == "http" else 443 if parsed_ref.scheme == "https" else None)
-                
-                if url_port != ref_port:
-                    return False
-                
-                return True
-            except Exception:
-                return False
+        _url_prefix = PUBLIC_BASE_URL.rstrip("/")
 
         def _resolve_trusted_source(url_or_path: str) -> tuple[bytes, str]:
-            """Read image bytes only from trusted sources.
-
-            Returns (image_bytes, original_filename).
-            Raises ValueError for untrusted inputs.
-            """
+            """Read image bytes only from trusted sources."""
             url_or_path = url_or_path.strip()
 
-            # Check if it's a URL and validate it properly
-            if url_or_path.startswith(("http://", "https://")):
-                if not _is_trusted_url(url_or_path):
-                    raise ValueError(f"Untrusted URL: {url_or_path}")
-                
-                # Parse the trusted URL
-                parsed = urlparse(url_or_path)
-                path = parsed.path
-                
-                # Accept /images/<name>, /webp/<name>, /thumbs/<name>
+            if url_or_path.startswith(_url_prefix):
+                suffix = url_or_path[len(_url_prefix):]
                 allowed_prefixes = ("/images/", "/webp/", "/thumbs/")
-                if not any(path.startswith(p) for p in allowed_prefixes):
+                if not any(suffix.startswith(p) for p in allowed_prefixes):
                     raise ValueError(f"URL path not allowed: {url_or_path}")
-                
-                filename = Path(path).name
-                # Map to correct directory
-                if path.startswith("/images/"):
+
+                filename = Path(suffix).name
+                if suffix.startswith("/images/"):
                     base = IMAGE_DIR
-                elif path.startswith("/webp/"):
+                elif suffix.startswith("/webp/"):
                     base = WEBP_DIR
                 else:
                     base = THUMB_DIR
-                
+
                 safe_name = safe_filename(filename)
                 if not safe_name:
                     raise ValueError(f"Invalid filename in URL: {filename}")
+
                 file_path = (base / safe_name).resolve()
                 if not str(file_path).startswith(str(base.resolve())):
                     raise ValueError(f"Path traversal detected: {file_path}")
                 if not file_path.is_file():
                     raise FileNotFoundError(f"File not found: {file_path}")
+
                 return file_path.read_bytes(), safe_name
 
-            # Check if it looks like a bare filename (no scheme, no path separators)
             stripped = url_or_path.strip("/")
             if "/" not in stripped and not url_or_path.startswith(("http://", "https://", "/")):
-                # Treat as filename within IMAGE_DIR
                 safe_name = safe_filename(stripped)
                 if not safe_name:
                     raise ValueError(f"Invalid filename: {stripped}")
+
                 file_path = (IMAGE_DIR / safe_name).resolve()
                 if not str(file_path).startswith(str(IMAGE_DIR.resolve())):
                     raise ValueError(f"Path traversal detected: {file_path}")
                 if not file_path.is_file():
                     raise FileNotFoundError(f"File not found in IMAGE_DIR: {safe_name}")
+
                 return file_path.read_bytes(), safe_name
 
-            # Everything else is rejected
             raise ValueError(
                 f"Untrusted source rejected: {url_or_path}. "
                 f"Only {PUBLIC_BASE_URL} URLs or filenames from IMAGE_DIR are allowed."
             )
 
-        # Загрузка файлов (только из доверенных источников)
-        image_list: list[dict[str, str]] = []
-        original_names: list[str] = []
+        session = get_session()
+        results: list[dict[str, str]] = []
+
         for url_or_path in file_urls:
             try:
-                img_data, name = _resolve_trusted_source(url_or_path)
+                img_data, original_name = _resolve_trusted_source(url_or_path)
             except (ValueError, FileNotFoundError) as exc:
                 logger.error("upscale_images: rejected source %r: %s", url_or_path, exc)
                 return f"Error: {exc}"
-            
-            # Check file size
-            if len(img_data) > MAX_FILE_SIZE_MB * 1024 * 1024:
-                raise ValueError(f"File too large. Maximum is {MAX_FILE_SIZE_MB}MB")
-            
-            b64 = base64.b64encode(img_data).decode("utf-8")
-            image_list.append({"data": b64, "name": name})
-            original_names.append(name)
 
-        # Отправка на WebUI для апскейла
-        payload = {
-            "resize_mode": resize_mode,
-            "show_extras_results": True,
-            "gfpgan_visibility": 0,
-            "codeformer_visibility": 0,
-            "codeformer_weight": 0,
-            "upscaling_resize": upscaling_resize,
-            "upscaling_resize_w": upscaling_resize_w,
-            "upscaling_resize_h": upscaling_resize_h,
-            "upscaling_crop": True,
-            "upscaler_1": upscaler_1,
-            "upscaler_2": upscaler_2,
-            "extras_upscaler_2_visibility": 0,
-            "upscale_first": False,
-            "imageList": image_list,
-        }
+            payload = {
+                "resize_mode": resize_mode,
+                "show_extras_results": True,
+                "gfpgan_visibility": 0,
+                "codeformer_visibility": 0,
+                "codeformer_weight": 0,
+                "upscaling_resize": upscaling_resize,
+                "upscaling_resize_w": upscaling_resize_w,
+                "upscaling_resize_h": upscaling_resize_h,
+                "upscaling_crop": True,
+                "upscaler_1": upscaler_1,
+                "upscaler_2": upscaler_2,
+                "extras_upscaler_2_visibility": 0,
+                "upscale_first": False,
+                "image": base64.b64encode(img_data).decode("utf-8"),
+            }
 
-        session = get_session()
-        resp = session.post(
-            f"{SD_WEBUI_URL}/sdapi/v1/extra-batch-images",
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        upscaled_b64_list = resp.json().get("images", [])
+            try:
+                resp = session.post(
+                    f"{SD_WEBUI_URL}/sdapi/v1/extra-single-image",
+                    json=payload,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                resp.raise_for_status()
+            except requests.RequestException as exc:
+                logger.exception("upscale_images: WebUI request failed for %s", url_or_path)
+                return f"Error: WebUI request failed for {url_or_path}: {exc}"
 
-        if not upscaled_b64_list:
-            logger.error("No images returned from upscaling endpoint")
-            raise RuntimeError("No images returned from upscaling endpoint")
+            data = resp.json()
+            upscaled_b64 = data.get("image")
+            if not upscaled_b64:
+                raise RuntimeError("No image returned from extra-single-image endpoint")
 
-        # Обработка результатов
-        results = []
-        for idx, img_b64 in enumerate(upscaled_b64_list):
-            orig_name = original_names[idx] if idx < len(original_names) else "image.png"
-            filename = generate_filename(prefix=f"upscaled_{Path(orig_name).stem}")
-            save_image_from_base64(img_b64, filename)
+            filename = generate_filename(prefix=f"upscaled_{Path(original_name).stem}")
+            save_image_from_base64(upscaled_b64, filename)
+
             thumb_name = make_thumbnail(filename)
-
             img_url = f"{PUBLIC_BASE_URL}/images/{filename}"
             thumb_url = f"{PUBLIC_BASE_URL}/thumbs/{thumb_name}" if thumb_name else ""
-            results.append({
-                "filename": filename,
-                "url": img_url,
-                "thumb_url": thumb_url,
-            })
 
-        # Формирование отчета
+            results.append(
+                {
+                    "filename": filename,
+                    "url": img_url,
+                    "thumb_url": thumb_url,
+                }
+            )
+
         result_lines = [
             f"Upscale complete! ({len(results)} image(s))",
             "",
         ]
+
         for i, r in enumerate(results, 1):
             result_lines.append(f"Upscaled {i}:")
-            result_lines.append(f"  URL: {r['url']}")
+            result_lines.append(f" URL: {r['url']}")
             if r["thumb_url"]:
-                result_lines.append(f"  Thumbnail: {r['thumb_url']}")
+                result_lines.append(f" Thumbnail: {r['thumb_url']}")
             result_lines.append("")
 
         return "\n".join(result_lines)
