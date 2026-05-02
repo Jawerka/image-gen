@@ -14,6 +14,7 @@ import base64
 import logging
 import random
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from fastmcp import FastMCP
@@ -271,7 +272,28 @@ def register_image_tools(mcp: FastMCP):
             return "Error: No files provided for upscaling."
 
         # --- Trusted-source validation helpers ---
-        _url_prefix = PUBLIC_BASE_URL.rstrip("/")
+        def _is_trusted_url(url: str) -> bool:
+            """Check if URL matches PUBLIC_BASE_URL by parsing scheme, host, and port."""
+            try:
+                parsed = urlparse(url)
+                parsed_ref = urlparse(PUBLIC_BASE_URL)
+                
+                # Must have same scheme, hostname, and port
+                if parsed.scheme != parsed_ref.scheme:
+                    return False
+                if parsed.hostname != parsed_ref.hostname:
+                    return False
+                
+                # Handle ports (default ports for schemes)
+                url_port = parsed.port or (80 if parsed.scheme == "http" else 443 if parsed.scheme == "https" else None)
+                ref_port = parsed_ref.port or (80 if parsed_ref.scheme == "http" else 443 if parsed_ref.scheme == "https" else None)
+                
+                if url_port != ref_port:
+                    return False
+                
+                return True
+            except Exception:
+                return False
 
         def _resolve_trusted_source(url_or_path: str) -> tuple[bytes, str]:
             """Read image bytes only from trusted sources.
@@ -281,21 +303,29 @@ def register_image_tools(mcp: FastMCP):
             """
             url_or_path = url_or_path.strip()
 
-            if url_or_path.startswith(_url_prefix):
-                # Trusted: URL pointing to our own server
-                suffix = url_or_path[len(_url_prefix):]
+            # Check if it's a URL and validate it properly
+            if url_or_path.startswith(("http://", "https://")):
+                if not _is_trusted_url(url_or_path):
+                    raise ValueError(f"Untrusted URL: {url_or_path}")
+                
+                # Parse the trusted URL
+                parsed = urlparse(url_or_path)
+                path = parsed.path
+                
                 # Accept /images/<name>, /webp/<name>, /thumbs/<name>
                 allowed_prefixes = ("/images/", "/webp/", "/thumbs/")
-                if not any(suffix.startswith(p) for p in allowed_prefixes):
+                if not any(path.startswith(p) for p in allowed_prefixes):
                     raise ValueError(f"URL path not allowed: {url_or_path}")
-                filename = Path(suffix).name
+                
+                filename = Path(path).name
                 # Map to correct directory
-                if suffix.startswith("/images/"):
+                if path.startswith("/images/"):
                     base = IMAGE_DIR
-                elif suffix.startswith("/webp/"):
+                elif path.startswith("/webp/"):
                     base = WEBP_DIR
                 else:
                     base = THUMB_DIR
+                
                 safe_name = safe_filename(filename)
                 if not safe_name:
                     raise ValueError(f"Invalid filename in URL: {filename}")
@@ -427,23 +457,40 @@ def register_image_tools(mcp: FastMCP):
     @mcp.tool()
     def get_gallery(limit: int = 20) -> str:
         """
-        Получить список последних сгенерированных изображений.
+        Get list of latest generated images with metadata.
+
+        Recursively scans IMAGE_DIR for images and returns them sorted by
+        modification time (newest first). Supports subdirectories.
 
         Args:
-            limit: Максимальное количество изображений (по умолчанию 20)
+            limit: Maximum number of images to return (default 20)
 
         Returns:
-            str: Список изображений с URL и размером
+            str: Formatted list of images with URLs, thumbnails, and sizes
         """
         images = []
-        for f in sorted(IMAGE_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        image_dir_resolved = IMAGE_DIR.resolve()
+        
+        for f in sorted(IMAGE_DIR.rglob("*"), key=lambda x: x.stat().st_mtime if x.is_file() else 0, reverse=True):
             if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
-                img_url = f"{PUBLIC_BASE_URL}/images/{f.name}"
+                # Skip files inside thumbs/webp directories
+                resolved = f.resolve()
+                if str(resolved).startswith(str(THUMB_DIR.resolve())):
+                    continue
+                if str(resolved).startswith(str(WEBP_DIR.resolve())):
+                    continue
+                
+                # Get relative path from IMAGE_DIR for URL generation
+                rel_path = resolved.relative_to(image_dir_resolved)
+                img_url = f"{PUBLIC_BASE_URL}/images/{rel_path}"
+                
+                # Thumbnail handling
                 thumb_name = f.stem + ".jpg"
                 thumb_path = THUMB_DIR / thumb_name
                 thumb_url = f"{PUBLIC_BASE_URL}/thumbs/{thumb_name}" if thumb_path.exists() else img_url
+                
                 images.append({
-                    "name": f.name,
+                    "name": str(rel_path),
                     "url": img_url,
                     "thumb_url": thumb_url,
                     "size_kb": round(f.stat().st_size / 1024, 1),

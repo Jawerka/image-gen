@@ -17,8 +17,6 @@ MCP-сервер для генерации изображений через Sta
 │  MCP Server (port 8081)      │
 │  - generate_image            │
 │  - upscale_images            │
-│  - get_sd_models             │
-│  - set_sd_model              │
 │  - get_sd_upscalers          │
 │  - get_gallery               │
 │       │                      │
@@ -37,7 +35,7 @@ MCP-сервер для генерации изображений через Sta
                  └──────────┬───────────┘
                             │
 ┌──────────────────────┐    │
-│  WEB Server (8080)   │◄───┘
+│  Web Server (8080)   │◄───┘
 │  - /                 │  HTML-галерея
 │  - /health           │  Health check
 │  - /images/{file}    │  Оригинал
@@ -75,8 +73,6 @@ python -m app.server
 |---|---|
 | `generate_image` | Генерация изображения через SD WebUI |
 | `upscale_images` | Апскейл изображений через WebUI |
-| `get_sd_models` | Список доступных моделей |
-| `set_sd_model` | Установка активной модели |
 | `get_sd_upscalers` | Список доступных апскейлеров |
 | `get_gallery` | Список последних сгенерированных изображений |
 
@@ -124,11 +120,12 @@ python -m app.server
 │   │   ├── server.py       # Единый сервер (MCP + Web)
 │   │   ├── tools.py        # MCP инструменты
 │   │   ├── utils.py        # Утилиты (сохранение, превью, очистка)
-│   │   └── sd_client.py    # Клиент SD WebUI
+│   │   └── web_server.py   # Веб-сервер (HTML галерея)
 │   ├── tmp/
 │   ├── logs/
 │   ├── requirements.txt
 │   ├── .env.example
+│   ├── GUIDE.md           # Руководство по использованию
 │   └── deploy/
 │       ├── image-gen.service
 │       ├── image-cleanup.service
@@ -149,7 +146,7 @@ python -m app.server
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | Внешний URL (для генерации ссылок) |
 | `WEB_HOST` | `0.0.0.0` | Хост WEB-сервера |
 | `WEB_PORT` | `8080` | Порт WEB-сервера |
-| `REQUEST_TIMEOUT` | `300` | Таймаут запросов (сек) |
+| `REQUEST_TIMEOUT` | `600` | Таймаут запросов (сек) |
 | `IMAGE_RETENTION_DAYS` | `3` | Срок хранения изображений (дней) |
 
 ## Порты
@@ -178,36 +175,3 @@ systemctl status image-gen
 - [GUIDE.md](GUIDE.md) — Подробное руководство по использованию (на русском)
 - [deploy/INSTALL.md](deploy/INSTALL.md) — Инструкция по установке (на русском)
 
-### Документация Cherry Studio
-
-Документация по интеграции с Cherry Studio находится в папке `cherry-studio-docs/`:
-- [EN Documentation](cherry-studio-docs/en/)
-- [RU Documentation](cherry-studio-docs/zh/)
-
-## Структура проекта
-
-```
-/root/image-gen/
-├── code/
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── settings.py     # Настройки из .env
-│   │   ├── server.py       # Единый сервер (MCP + Web)
-│   │   ├── tools.py        # MCP инструменты
-│   │   ├── utils.py        # Утилиты (сохранение, превью, очистка)
-│   │   └── sd_client.py    # Клиент SD WebUI
-│   ├── tmp/
-│   ├── logs/
-│   ├── requirements.txt
-│   ├── .env.example
-│   ├── GUIDE.md            # Руководство по использованию
-│   └── deploy/
-│       ├── image-gen.service
-│       ├── image-cleanup.service
-│       ├── image-cleanup.timer
-│       └── INSTALL.md
-├── images/
-│   ├── *.png               # Оригиналы
-│   └── thumbs/
-│       └── *.jpg           # Превью
-```

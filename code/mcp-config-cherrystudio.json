@@ -10,12 +10,12 @@
   },
   "_instructions": {
     "generate_image": {
-      "batch_size_info": "batch_size controls how many images are generated in a single API call (1-2). Each image gets a unique URL.",
+      "description": "Generates images via Stable Diffusion WebUI. For multiple images, call the tool multiple times.",
       "examples": {
-        "1_image": "batch_size=1",
-        "2_images": "batch_size=2"
+        "single_image": "generate_image(prompt='a beautiful landscape')",
+        "with_negative": "generate_image(prompt='...', negative_prompt='blurry, low quality')"
       },
-      "note": "For more than 2 images, call the tool multiple times. Do NOT use batch_size > 2."
+      "note": "Each call generates one image. Use seed=-1 for random or specify seed for reproducibility."
     }
   }
 }

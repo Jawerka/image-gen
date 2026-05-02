@@ -166,10 +166,11 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
                     "⚠️ MCP ERROR: %s %s -> %d from %s (session: %s)",
                     method, path, response.status_code, client_host, session_id[:16] if session_id != "no-session" else "none"
                 )
+            
+            return response
         else:
             response = await call_next(request)
-
-        return response
+            return response
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +297,17 @@ def get_meta(filename: str):
         dict: Метаданные файла (размер, даты создания/изменения)
         JSONResponse: Ошибка 404 если файл не найден
     """
-    info = get_file_info(filename)
+    try:
+        path = _resolve_path(IMAGE_DIR, filename)
+    except ValueError:
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+    
+    if not path.exists():
+        return JSONResponse({"error": "Image not found"}, status_code=404)
+    
+    # Get relative path from IMAGE_DIR for consistent metadata lookup
+    rel_path = path.relative_to(IMAGE_DIR.resolve())
+    info = get_file_info(str(rel_path))
     if info is None:
         return JSONResponse({"error": "Image not found"}, status_code=404)
     return info
@@ -325,7 +336,8 @@ def get_gallery(limit: int = 50):
                 continue
             # Относительный путь от IMAGE_DIR — защищает от коллизий имён в подкаталогах
             rel_path = resolved.relative_to(image_dir_resolved)
-            info = get_file_info(f.name)
+            # Use relative path for metadata lookup to support subdirectories
+            info = get_file_info(str(rel_path))
             if info:
                 # URL-кодируем относительный путь для корректной работы с подкаталогами
                 info["url"] = f"{PUBLIC_BASE_URL}/images/{rel_path}"
