@@ -398,6 +398,77 @@ def api_refresh():
     return JSONResponse({"images": image_data, "count": len(image_data)})
 
 
+@app.delete("/api/delete/{filename}")
+def delete_image(filename: str):
+    """
+    Удалить изображение и все связанные файлы (превью, WebP).
+
+    Args:
+        filename: Имя файла изображения
+
+    Returns:
+        JSONResponse: Статус операции
+    """
+    try:
+        # Безопасно разрешаем пути для всех связанных файлов
+        original_path = _resolve_path(IMAGE_DIR, filename)
+        
+        if not original_path.exists():
+            return JSONResponse({"status": "error", "error": "Image not found"}, status_code=404)
+        
+        deleted_files = []
+        errors = []
+
+        # 1. Удаляем оригинал
+        try:
+            original_path.unlink()
+            deleted_files.append(f"Original: {filename}")
+        except Exception as e:
+            errors.append(f"Failed to delete original: {e}")
+
+        # 2. Удаляем превью (jpg и png версии)
+        stem = original_path.stem
+        thumb_jpg = THUMB_DIR / f"{stem}.jpg"
+        thumb_png = THUMB_DIR / f"{stem}.png"
+        
+        for thumb_path in [thumb_jpg, thumb_png]:
+            if thumb_path.exists():
+                try:
+                    thumb_path.unlink()
+                    deleted_files.append(f"Thumbnail: {thumb_path.name}")
+                except Exception as e:
+                    errors.append(f"Failed to delete thumbnail {thumb_path.name}: {e}")
+
+        # 3. Удаляем WebP версию
+        from app.utils import ensure_webp
+        webp_name = ensure_webp(filename)
+        if webp_name:
+            webp_path = WEBP_DIR / webp_name
+            if webp_path.exists():
+                try:
+                    webp_path.unlink()
+                    deleted_files.append(f"WebP: {webp_name}")
+                except Exception as e:
+                    errors.append(f"Failed to delete WebP: {e}")
+
+        if errors:
+            logger.warning("Partial delete for %s: %s", filename, errors)
+            return JSONResponse({
+                "status": "partial",
+                "deleted": deleted_files,
+                "errors": errors
+            })
+        
+        logger.info("Deleted image %s: %s", filename, deleted_files)
+        return JSONResponse({"status": "ok", "deleted": deleted_files})
+
+    except ValueError as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("Error deleting image %s", filename)
+        return JSONResponse({"status": "error", "error": "Internal server error"}, status_code=500)
+
+
 @app.post("/cleanup")
 def cleanup():
     """

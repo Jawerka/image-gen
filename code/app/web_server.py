@@ -224,6 +224,30 @@ gallery_html_template = Template(r"""<!DOCTYPE html>
       background: rgba(255, 255, 255, 0.15);
       transform: scale(1.1);
     }
+    .delete-btn {
+      position: absolute;
+      top: 10px;
+      left: 118px;
+      background: rgba(255, 255, 255, 0.05);
+      border: none;
+      color: #eee;
+      font-size: 20px;
+      cursor: pointer;
+      z-index: 10;
+      opacity: 0.3;
+      transition: opacity 0.2s, background 0.2s, transform 0.2s;
+      border-radius: 50%;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .delete-btn:hover {
+      opacity: 1;
+      background: rgba(255, 50, 50, 0.3);
+      transform: scale(1.1);
+    }
     .refresh-btn.spinning {
       animation: spin 0.8s linear infinite;
     }
@@ -274,6 +298,7 @@ gallery_html_template = Template(r"""<!DOCTYPE html>
       <div class="image-wrapper">
         <button class="download-btn" id="download-btn" title="Скачать оригинал">⬇</button>
         <button class="refresh-btn" id="refresh-btn" title="Обновить галерею">🔄</button>
+        <button class="delete-btn" id="delete-btn" title="Удалить изображение">🗑</button>
         <span class="arrow" id="left-arrow">&#8592;</span>
         <img id="main-image" src="${first_image}" alt="Generated image">
         <span class="arrow" id="right-arrow">&#8594;</span>
@@ -317,6 +342,7 @@ gallery_html_template = Template(r"""<!DOCTYPE html>
       const fullscreenImage = document.getElementById('fullscreen-image');
       const downloadBtn = document.getElementById('download-btn');
       const refreshBtn = document.getElementById('refresh-btn');
+      const deleteBtn = document.getElementById('delete-btn');
 
       function downloadCurrentImage() {
         if (!filteredImages.length) return;
@@ -369,6 +395,33 @@ gallery_html_template = Template(r"""<!DOCTYPE html>
       }
 
       refreshBtn.addEventListener('click', refreshGallery);
+
+      function deleteCurrentImage() {
+        if (!filteredImages.length) return;
+        const data = filteredImages[currentIndex];
+        const filename = (data.original_src || data.src).split('/').pop();
+        if (!confirm('Вы уверены, что хотите удалить это изображение?\nБудут удалены: оригинал, превью и WebP версия.')) {
+          return;
+        }
+        fetch('/api/delete/' + encodeURIComponent(filename), { method: 'DELETE' })
+          .then(response => response.json())
+          .then(result => {
+            if (result.status === 'ok') {
+              flashButton(deleteBtn, true);
+              // Обновляем галерею после удаления
+              refreshGallery();
+            } else {
+              flashButton(deleteBtn, false);
+              alert('Ошибка при удалении: ' + (result.error || 'Unknown error'));
+            }
+          })
+          .catch(() => {
+            flashButton(deleteBtn, false);
+            alert('Ошибка при удалении изображения');
+          });
+      }
+
+      deleteBtn.addEventListener('click', deleteCurrentImage);
 
       function sanitizeHash(str) {
         return str.replace(/[^a-zA-Z0-9\\-_]/g, '_');
