@@ -95,12 +95,29 @@ def register_image_tools(mcp: FastMCP):
         """
         Генерирует изображение через Stable Diffusion WebUI.
 
+        Рекомендуемые разрешения (width x height):
+        - 1024 × 1024 – 1:1
+        - 1152 × 896 – 4:3
+        - 896 × 1152 – 3:4
+        - 1216 × 832 – 3:2
+        - 832 × 1216 – 2:3
+        - 1280 × 768 – 5:3 (≈16:9)
+        - 768 × 1280 – 3:5
+        - 1344 × 768 – 7:4
+        - 768 × 1344 – 4:7
+        - 1408 × 832 – 17:10 (≈1.69)
+        - 832 × 1408 – 10:17
+        - 1536 × 1024 – 3:2
+        - 1024 × 1536 – 2:3
+        - 1664 × 1024 – 13:8 (≈1.63)
+        - 1024 × 1664 – 8:13
+
         Args:
             prompt: Текстовое описание желаемого изображения
             negative_prompt: Текстовое описание того, что не должно быть на изображении
             steps: Количество шагов диффузии (1-150, по умолчанию 22)
-            width: Ширина изображения в пикселях (512-2048, по умолчанию 1024)
-            height: Высота изображения в пикселях (512-2048, по умолчанию 1024)
+            width: Ширина изображения в пикселях (768-2048, по умолчанию 1024)
+            height: Высота изображения в пикселях (768-2048, по умолчанию 1024)
             cfg_scale: Масштаб следования промпту (1-30, по умолчанию 5.0)
             sampler_name: Имя сэмплера для генерации (по умолчанию "Euler a")
             scheduler: Тип планировщика (по умолчанию "Karras")
@@ -121,12 +138,12 @@ def register_image_tools(mcp: FastMCP):
         # Валидация параметров
         if not (1 <= steps <= 150):
             raise ValueError("steps must be in range 1 to 150")
-        if not (512 <= width <= 2048):
-            raise ValueError("width must be in range 512 to 2048")
+        if not (768 <= width <= 2048):
+            raise ValueError("width must be in range 768 to 2048")
         if width % 8 != 0:
             raise ValueError("width must be multiple of 8")
-        if not (512 <= height <= 2048):
-            raise ValueError("height must be in range 512 to 2048")
+        if not (768 <= height <= 2048):
+            raise ValueError("height must be in range 768 to 2048")
         if height % 8 != 0:
             raise ValueError("height must be multiple of 8")
         if not (1 <= cfg_scale <= 30):
