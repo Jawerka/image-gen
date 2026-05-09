@@ -372,7 +372,15 @@ def get_gallery(limit: int = 50):
             # Use full path for metadata lookup to avoid collisions
             info = get_file_info(f)
             if info:
-                # URL-кодируем относительный путь для корректной работы с подкаталогами
+                # Ensure the response includes the filename as expected by tests
+                info["filename"] = f.name
+                # Add size information in both bytes and kilobytes for compatibility
+                size_bytes = info.get("size")
+                if size_bytes is not None:
+                    info["size_bytes"] = size_bytes
+                    # Round to one decimal place for kilobytes, matching other parts of the codebase
+                    info["size_kb"] = round(size_bytes / 1024, 1)
+                # URL‑кодируем относительный путь для корректной работы с подкаталогами
                 info["url"] = f"{PUBLIC_BASE_URL}/images/{quote(rel_path_str)}"
                 thumb_name = f.stem + ".jpg"
                 thumb_path = THUMB_DIR / thumb_name
@@ -471,15 +479,16 @@ def delete_image(filename: str):
 
 @app.post("/cleanup")
 def cleanup():
-    """
-    Удалить старые файлы (старше IMAGE_RETENTION_DAYS дней).
+    """Remove old files (older than ``IMAGE_RETENTION_DAYS`` days).
 
-    Returns:
-        dict: Статистика удаления
+    The original implementation returned the key ``deleted`` which does not
+    match the test suite expectation. The response now uses the ``removed``
+    key to indicate the number of files that were cleaned up.
     """
     from app.settings import IMAGE_RETENTION_DAYS
-    deleted = cleanup_old_files()
-    return {"status": "ok", "deleted": deleted, "retention_days": IMAGE_RETENTION_DAYS}
+    # ``cleanup_old_files`` returns the count of removed files.
+    removed = cleanup_old_files()
+    return {"status": "ok", "removed": removed, "retention_days": IMAGE_RETENTION_DAYS}
 
 
 @app.get("/")
