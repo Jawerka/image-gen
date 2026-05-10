@@ -288,10 +288,16 @@ curl http://localhost:8080/meta/sd_a1b2c3d4e5f6.png
 **Ответ:**
 ```json
 {
-  "filename": "sd_a1b2c3d4e5f6.png",
-  "size_bytes": 237900,
-  "created": 1714567890.123,
-  "modified": 1714567890.123
+  "status": "ok",
+  "data": {
+    "name": "sd_a1b2c3d4e5f6.png",
+    "size": 237900,
+    "mtime": 1714567890.123,
+    "prompt": "",
+    "negative": "",
+    "params": "",
+    "description": ""
+  }
 }
 ```
 
@@ -307,17 +313,26 @@ curl http://localhost:8080/gallery
 **Ответ:**
 ```json
 {
-  "images": [
-    {
-      "filename": "sd_a1b2c3d4e5f6.png",
-      "size_bytes": 237900,
-      "created": 1714567890.123,
-      "modified": 1714567890.123,
-      "url": "http://192.168.88.16:8080/images/sd_a1b2c3d4e5f6.png",
-      "thumb_url": "http://192.168.88.16:8080/thumbs/sd_a1b2c3d4e5f6.jpg"
-    }
-  ],
-  "count": 1
+  "status": "ok",
+  "data": {
+    "images": [
+      {
+        "filename": "sd_a1b2c3d4e5f6.png",
+        "name": "sd_a1b2c3d4e5f6.png",
+        "size": 237900,
+        "size_bytes": 237900,
+        "size_kb": 232.3,
+        "mtime": 1714567890.123,
+        "prompt": "",
+        "negative": "",
+        "params": "",
+        "description": "",
+        "url": "http://192.168.88.16:8080/images/sd_a1b2c3d4e5f6.png",
+        "thumb_url": "http://192.168.88.16:8080/thumbs/sd_a1b2c3d4e5f6.jpg"
+      }
+    ],
+    "count": 1
+  }
 }
 ```
 
@@ -340,7 +355,62 @@ curl -X POST http://localhost:8080/cleanup
 **Ответ:**
 ```json
 {
-  "removed": 5
+  "status": "ok",
+  "data": {
+    "removed": 5,
+    "retention_days": 3
+  }
+}
+```
+
+#### GET /api/refresh
+
+Обновить список изображений для AJAX‑обновления галереи.
+
+**Пример:**
+```bash
+curl http://localhost:8080/api/refresh
+```
+
+**Ответ:**
+```json
+{
+  "status": "ok",
+  "data": {
+    "images": [],
+    "count": 0
+  }
+}
+```
+
+#### DELETE /api/delete/{filename}
+
+Удалить изображение и связанные файлы (превью JPG/PNG и WebP).
+
+**Пример:**
+```bash
+curl -X DELETE http://localhost:8080/api/delete/sd_a1b2c3d4e5f6.png
+```
+
+**Ответ (успех):**
+```json
+{
+  "status": "ok",
+  "data": {
+    "deleted": [
+      "Original: sd_a1b2c3d4e5f6.png",
+      "Thumbnail: sd_a1b2c3d4e5f6.jpg",
+      "WebP: sd_a1b2c3d4e5f6.webp"
+    ]
+  }
+}
+```
+
+**Ответ (ошибка):**
+```json
+{
+  "status": "error",
+  "error": "Image not found"
 }
 ```
 

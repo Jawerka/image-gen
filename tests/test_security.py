@@ -83,7 +83,7 @@ class TestPathTraversalPrevention:
         """Test that _resolve_path in server.py blocks traversal."""
         from app.server import _resolve_path
         from app.settings import IMAGE_DIR
-        from pathlib import Path
+        from fastapi import HTTPException
         
         # Should work for valid filename
         result = _resolve_path(IMAGE_DIR, "test.png")
@@ -93,7 +93,7 @@ class TestPathTraversalPrevention:
         # Should raise for traversal - but safe_filename strips path components
         # so "../../../etc/passwd" becomes "passwd" which is valid
         # Let's test with a name that can't be sanitized to a valid filename
-        with pytest.raises(ValueError):
+        with pytest.raises(HTTPException):
             # This should fail because safe_filename will return empty string
             _resolve_path(IMAGE_DIR, "../../../")
 
@@ -151,19 +151,23 @@ class TestGalleryConsistency:
         resp = client.get("/gallery")
         assert resp.status_code == 200
         data = resp.json()
-        
-        assert "images" in data
-        assert "count" in data
-        assert isinstance(data["images"], list)
-        assert isinstance(data["count"], int)
-        assert data["count"] == len(data["images"])
+
+        assert data["status"] == "ok"
+        assert "data" in data
+        payload = data["data"]
+
+        assert "images" in payload
+        assert "count" in payload
+        assert isinstance(payload["images"], list)
+        assert isinstance(payload["count"], int)
+        assert payload["count"] == len(payload["images"])
 
     def test_gallery_images_have_required_fields(self, client):
         """Each image in gallery should have required fields."""
         resp = client.get("/gallery")
-        data = resp.json()
-        
-        for img in data["images"]:
+        payload = resp.json()["data"]
+
+        for img in payload["images"]:
             assert "url" in img
             assert "filename" in img
             assert "size_bytes" in img or "size_kb" in img
@@ -171,5 +175,5 @@ class TestGalleryConsistency:
     def test_gallery_limit_works(self, client):
         """Limit parameter should be respected."""
         resp = client.get("/gallery?limit=3")
-        data = resp.json()
-        assert data["count"] <= 3
+        payload = resp.json()["data"]
+        assert payload["count"] <= 3

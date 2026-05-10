@@ -10,6 +10,7 @@ This module contains helper functions for:
 - Extracting image metadata
 """
 
+import base64
 import logging
 import time
 import uuid
@@ -71,11 +72,11 @@ def safe_filename(filename: str) -> str:
     """
     # Remove any path traversal attempts
     safe = Path(filename).name
-    
+
     # Reject if result is empty or just dots (., .., etc.)
     if not safe or all(c == '.' for c in safe):
         return ""
-    
+
     # Allow only alphanumeric characters, dots and underscores
     allowed_chars = set(
         "abcdefghijklmnopqrstuvwxyz"
@@ -84,11 +85,11 @@ def safe_filename(filename: str) -> str:
         "_-."
     )
     result = "".join(c for c in safe if c in allowed_chars)
-    
+
     # Final validation: must not be empty after sanitization
     if not result:
         return ""
-    
+
     return result
 
 
@@ -139,7 +140,7 @@ def save_image_from_base64(b64_data: str, filename: str | None = None) -> str:
         _, b64 = b64_data.split(",", 1)
     else:
         b64 = b64_data
-    img_bytes = __import__("base64").b64decode(b64)
+    img_bytes = base64.b64decode(b64)
     return save_image(img_bytes, filename)
 
 
@@ -389,21 +390,22 @@ def extract_image_metadata(img_path: Path) -> dict | None:
 def resolve_image_path(filename: str) -> Path:
     """
     Safely resolve a filename or relative path against IMAGE_DIR.
-    
+
     Prevents path traversal attacks by ensuring the resolved path
     stays within IMAGE_DIR.
-    
+
     Args:
         filename: Filename or relative path (e.g., "image.png" or "subdir/image.png")
-        
+
     Returns:
         Path: Resolved absolute path
-        
+
     Raises:
         ValueError: If path traversal is detected
     """
-    path = (IMAGE_DIR / filename).resolve()
-    if not str(path).startswith(str(IMAGE_DIR.resolve())):
+    base = IMAGE_DIR.resolve()
+    path = (base / filename).resolve()
+    if not path.is_relative_to(base):
         raise ValueError("Path traversal detected")
     return path
 
@@ -435,13 +437,13 @@ def get_file_info(path: Path | str) -> dict | None:
             path = resolve_image_path(path)
         except ValueError:
             return None
-    
+
     if not isinstance(path, Path):
         path = Path(path)
-    
+
     if not path.exists():
         return None
-        
+
     stat = path.stat()
     base_info = {
         "name": path.name,

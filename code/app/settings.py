@@ -1,17 +1,15 @@
 """
-Настройки приложения, загружаемые из переменных окружения (.env).
+Application settings loaded from environment variables (.env).
 
-Этот модуль определяет все настройки приложения, которые могут быть
-настроены через переменные окружения. При импорте автоматически
-загружает переменные из файла .env (если он существует).
+This module defines all configurable settings for the application. On import,
+it automatically loads variables from a local `.env` file (if present).
 
-Структура настроек:
-    1. Пути и директории
-    2. Настройки Stable Diffusion WebUI
-    3. Настройки генерации изображений
-    4. Настройки апскейлинга
-    5. Настройки веб-сервера
-    6. Настройки очистки файлов
+Settings layout:
+    1. Paths and directories
+    2. Stable Diffusion WebUI connection
+    3. Default generation parameters
+    4. Web server settings
+    5. File cleanup / retention
 """
 
 import logging
@@ -22,15 +20,19 @@ from dotenv import load_dotenv
 
 _logger = logging.getLogger("settings")
 
-# Загрузка переменных окружения из файла .env
+# Load environment variables from `.env` (if present).
 load_dotenv()
 
 
 # ---------------------------------------------------------------------------
-# Утилиты валидации
+# Validation helpers
 # ---------------------------------------------------------------------------
 def _env_int(name: str, default: int, *, min_val: int | None = None, max_val: int | None = None) -> int:
-    """Безопасно прочитать int из env. При ошибке — вернуть default и залогировать предупреждение."""
+    """Read an int from env safely.
+
+    If parsing fails, the function returns `default` and logs a warning. If
+    `min_val` / `max_val` are provided, the value is clamped into the range.
+    """
     raw = os.getenv(name, str(default))
     try:
         value = int(raw)
@@ -47,7 +49,11 @@ def _env_int(name: str, default: int, *, min_val: int | None = None, max_val: in
 
 
 def _env_float(name: str, default: float, *, min_val: float | None = None, max_val: float | None = None) -> float:
-    """Безопасно прочитать float из env. При ошибке — вернуть default и залогировать предупреждение."""
+    """Read a float from env safely.
+
+    If parsing fails, the function returns `default` and logs a warning. If
+    `min_val` / `max_val` are provided, the value is clamped into the range.
+    """
     raw = os.getenv(name, str(default))
     try:
         value = float(raw)
@@ -63,117 +69,100 @@ def _env_float(name: str, default: float, *, min_val: float | None = None, max_v
     return value
 
 # ---------------------------------------------------------------------------
-# Пути и директории
+# Paths and directories
 # ---------------------------------------------------------------------------
-# Базовая директория проекта
-# По умолчанию: /root/image-gen/code
+# Project base directory
+# Default: /root/image-gen/code
 BASE_DIR = Path(os.getenv("BASE_DIR", "/root/image-gen/code"))
 
-# Директория для изображений - может быть вне проекта
-# По умолчанию: /root/image-gen/images (родительская директория BASE_DIR)
+# Image directory (can be outside the project)
+# Default: /root/image-gen/images (BASE_DIR parent)
 IMAGE_DIR = Path(os.getenv("IMAGE_DIR", str(BASE_DIR.parent / "images")))
 
-# Директория для превью изображений
-# Располагается внутри IMAGE_DIR: /root/image-gen/images/thumbs
+# Thumbnail directory (inside IMAGE_DIR)
 THUMB_DIR = IMAGE_DIR / "thumbs"
 
-# Директория для WebP-копий изображений (оптимизированные для веба)
-# Располагается внутри IMAGE_DIR: /root/image-gen/images/webp
+# WebP cache directory (inside IMAGE_DIR)
 WEBP_DIR = IMAGE_DIR / "webp"
 
-# Создаём директории при импорте модуля
-# Это гарантирует, что все необходимые директории существуют
+# Create directories on import to ensure the app can start cleanly.
 for _dir in (IMAGE_DIR, THUMB_DIR, WEBP_DIR):
     _dir.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Основные настройки WebUI
+# Stable Diffusion WebUI connection
 # ---------------------------------------------------------------------------
-# URL сервера Stable Diffusion WebUI
-# По умолчанию: http://127.0.0.1:7860
+# Default: http://127.0.0.1:7860
 SD_WEBUI_URL = os.getenv("SD_WEBUI_URL", "http://127.0.0.1:7860")
 
-# Имя пользователя для аутентификации (опционально)
+# Optional basic auth credentials.
 AUTH_USER = os.getenv("SD_AUTH_USER")
 
-# Пароль для аутентификации (опционально)
 AUTH_PASS = os.getenv("SD_AUTH_PASS")
 
-# Таймаут запросов к WebUI в секундах
-# По умолчанию: 600 секунд (10 минут)
+# WebUI request timeout (seconds). Default: 600 (10 minutes).
 REQUEST_TIMEOUT = _env_int("REQUEST_TIMEOUT", 600, min_val=10, max_val=3600)  # seconds
 
-# Таймаут MCP сервера в секундах (для Streamable HTTP)
-# По умолчанию: 900 секунд (15 минут) - должен быть больше REQUEST_TIMEOUT
+# MCP server timeout for streamable HTTP (seconds). Default: 900 (15 minutes).
+# It should be greater than REQUEST_TIMEOUT.
 MCP_TIMEOUT = _env_int("MCP_TIMEOUT", 900, min_val=10, max_val=7200)  # seconds
 
 # ---------------------------------------------------------------------------
-# Настройки генерации изображений (по умолчанию)
+# Default generation parameters
 # ---------------------------------------------------------------------------
-# Негативный промпт (то, что не должно быть на изображении)
 SD_NEGATIVE_PROMPT = os.getenv("SD_NEGATIVE_PROMPT", "")
 
-# Количество шагов диффузии (1-150)
-# Больше шагов = лучше качество, но дольше генерация
+# Diffusion steps (1-150).
 SD_STEPS = _env_int("SD_STEPS", 22, min_val=1, max_val=150)
 
-# Имя сэмплера для генерации
-# Доступные: Euler a, Euler, LMS, DPM++ 2M Karras и др.
+# Sampler name (depends on your WebUI setup).
 SD_SAMPLER = os.getenv("SD_SAMPLER", "Euler a")
 
-# Тип планировщика
-# Доступные: Karras, Exponential, Polyexponential, Sigmoid и др.
+# Scheduler type (depends on your WebUI setup).
 SD_SCHEDULE_TYPE = os.getenv("SD_SCHEDULE_TYPE", "Karras")
 
-# Масштаб следования промпту (1-30)
-# Больше значение = строже следование промпту
+# CFG scale (1-30).
 SD_CFG_SCALE = _env_float("SD_CFG_SCALE", 5.0, min_val=1.0, max_val=30.0)
 
-# Сид для воспроизводимости (-1 для случайного)
+# Seed for reproducibility (-1 for random).
 SD_SEED = _env_int("SD_SEED", -1, min_val=-1)
 
-# Ширина изображения в пикселях (768-2048)
-# Рекомендуемые значения: 768, 832, 896, 1024, 1152, 1216, 1280, 1344, 1408, 1536, 1664, 2048
+# Image width in pixels (768-2048).
 SD_WIDTH = _env_int("SD_WIDTH", 1040, min_val=768, max_val=2048)
 
-# Высота изображения в пикселях (768-2048)
-# Рекомендуемые значения: 768, 832, 896, 1024, 1152, 1216, 1280, 1344, 1408, 1536, 1664, 2048
+# Image height in pixels (768-2048).
 SD_HEIGHT = _env_int("SD_HEIGHT", 1160, min_val=768, max_val=2048)
 
 # ---------------------------------------------------------------------------
-# WEB сервер
+# Web server
 # ---------------------------------------------------------------------------
-# Хост для прослушивания (0.0.0.0 = все интерфейсы)
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
 
-# Порт для раздачи изображений
+# Port for serving the gallery and REST API.
 WEB_PORT = _env_int("WEB_PORT", 8080, min_val=1024, max_val=65535)
 
-# Внешний URL (используется для генерации ссылок в ответах)
-# Формируется автоматически на основе WEB_PORT, если не задан
+# Public base URL used to generate links returned by MCP tools.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", f"http://localhost:{WEB_PORT}")
 
 # ---------------------------------------------------------------------------
-# MCP сессии (ограничение и очистка)
+# MCP session tracking
 # ---------------------------------------------------------------------------
-# Максимальное количество одновременно отслеживаемых MCP-сессий
 MAX_SESSIONS = _env_int("MAX_SESSIONS", 500, min_val=10, max_val=10000)
 
-# Время жизни сессии без активности (секунды)
+# Session idle TTL (seconds).
 SESSION_MAX_AGE_SECONDS = _env_int("SESSION_MAX_AGE_SECONDS", 3600, min_val=60, max_val=86400)
 
 # ---------------------------------------------------------------------------
-# Очистка файлов (дни)
+# File retention (days)
 # ---------------------------------------------------------------------------
-# Сколько дней хранить изображения перед автоматической очисткой
 IMAGE_RETENTION_DAYS = _env_int("IMAGE_RETENTION_DAYS", 3, min_val=1, max_val=365)
 
 
-# ---------------------------------------------------------------------------
-# Публичная функция для проверки согласованности настроек
-# ---------------------------------------------------------------------------
 def validate_settings() -> None:
-    """Проверить критичные зависимости между настройками. Вызывается при старте сервера."""
+    """Validate critical relationships between settings.
+
+    This is called at startup and logs warnings for suspicious configurations.
+    """
     if MCP_TIMEOUT <= REQUEST_TIMEOUT:
         _logger.warning(
             "MCP_TIMEOUT (%ds) should be greater than REQUEST_TIMEOUT (%ds)",

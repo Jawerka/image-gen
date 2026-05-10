@@ -33,16 +33,19 @@ class TestGallery:
         resp = client.get("/gallery")
         assert resp.status_code == 200
         data = resp.json()
-        assert "images" in data
-        assert "count" in data
-        assert isinstance(data["images"], list)
+        assert data["status"] == "ok"
+        assert "data" in data
+        assert "images" in data["data"]
+        assert "count" in data["data"]
+        assert isinstance(data["data"]["images"], list)
 
     def test_gallery_limit(self, client):
         """Gallery should respect the `limit` query parameter."""
         resp = client.get("/gallery?limit=5")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["count"] <= 5
+        assert data["status"] == "ok"
+        assert data["data"]["count"] <= 5
 
     def test_index_html(self, client):
         """Root path should return an HTML page."""
@@ -120,8 +123,9 @@ class TestRefresh:
         resp = client.get("/api/refresh")
         assert resp.status_code == 200
         data = resp.json()
-        assert "images" in data
-        assert "count" in data
+        assert data["status"] == "ok"
+        assert "images" in data["data"]
+        assert "count" in data["data"]
 
 
 class TestCleanup:
@@ -131,8 +135,9 @@ class TestCleanup:
         resp = client.post("/cleanup")
         assert resp.status_code == 200
         data = resp.json()
-        assert "removed" in data
-        assert isinstance(data["removed"], int)
+        assert data["status"] == "ok"
+        assert "removed" in data["data"]
+        assert isinstance(data["data"]["removed"], int)
 
 
 class TestPathSanitization:

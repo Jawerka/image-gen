@@ -1,8 +1,8 @@
 """
-Генератор HTML-галереи для раздачи изображений по HTTP.
+HTML gallery generator for serving images over HTTP.
 
-Этот модуль содержит только функции для генерации HTML-галереи.
-Основной веб-сервер находится в server.py.
+This module only contains functions required to generate the interactive HTML
+gallery. The FastAPI web server lives in `server.py`.
 """
 
 import html
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 # ===========================================================================
-# Встроенный HTML-шаблон
+# Embedded HTML template (user-facing strings are in Russian)
 # ===========================================================================
 
 gallery_html_template = Template(r"""<!DOCTYPE html>
@@ -376,7 +376,10 @@ gallery_html_template = Template(r"""<!DOCTYPE html>
         fetch('/api/refresh')
           .then(response => response.json())
           .then(data => {
-            filteredImages = data.images || [];
+            if (!data || data.status !== 'ok') {
+              throw new Error((data && data.error) ? data.error : 'Refresh failed');
+            }
+            filteredImages = (data.data && data.data.images) ? data.data.images : [];
             if (filteredImages.length > 0) {
               if (currentIndex >= filteredImages.length) {
                 currentIndex = 0;
@@ -433,6 +436,8 @@ gallery_html_template = Template(r"""<!DOCTYPE html>
         filteredImages.forEach((item, index) => {
           const thumb = document.createElement('img');
           thumb.src = item.thumb_src || item.src;
+          thumb.loading = 'lazy';
+          thumb.decoding = 'async';
           thumb.onclick = () => {
             currentIndex = index;
             updateContent();
@@ -594,10 +599,10 @@ gallery_html_template = Template(r"""<!DOCTYPE html>
 
 def generate_gallery_html() -> str:
     """
-    Сгенерировать интерактивную HTML-галерею.
+    Generate the interactive HTML gallery page.
 
     Returns:
-        str: HTML-код страницы галереи
+        str: Full HTML page markup.
     """
     start_time = time.time()
     image_data = _build_image_data_list()
@@ -609,9 +614,9 @@ def generate_gallery_html() -> str:
             "<h1>Нет изображений</h1><p>Сгенерируйте изображения, чтобы они появились здесь.</p></body></html>"
         )
 
-    # Генерация миниатюр
+    # Server-side thumbnail strip rendering (initial payload).
     thumbnail_html = "".join(
-        f'<img src="{item["src"]}" alt="Preview {i}">'
+        f'<img src="{item.get("thumb_src") or item["src"]}" alt="Preview {i}" loading="lazy" decoding="async">'
         for i, item in enumerate(image_data)
     )
 
@@ -619,7 +624,7 @@ def generate_gallery_html() -> str:
     image_data_json = json.dumps(image_data, indent=4, ensure_ascii=False).replace("</script>", "<\\/script>")
 
     def escape_for_textarea(text):
-        """Экранирование данных для безопасной вставки в <textarea>."""
+        """Escape text for safe insertion into a `<textarea>`."""
         if not text:
             return ''
         return html.escape(text, quote=False)
@@ -639,10 +644,10 @@ def generate_gallery_html() -> str:
 
 def _build_image_data_list() -> list:
     """
-    Построить список данных изображений для галереи.
+    Build the image metadata list consumed by the gallery front-end.
 
     Returns:
-        list: Список словарей с данными изображений
+        list: A list of dicts (src, thumb_src, prompt, negative, params, etc.).
     """
     image_data = []
     supported = {'.png', '.jpg', '.jpeg', '.webp'}

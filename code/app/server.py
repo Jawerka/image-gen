@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 """
-Единый сервер: MCP (Streamable HTTP) для MCP + Web (FastAPI) для раздачи.
+Unified server: MCP (streamable HTTP) + Web (FastAPI) in one process.
 
-Архитектура:
-  - MCP Endpoint: /mcp  (Streamable HTTP transport)
-  - Web Endpoints: /images, /thumbs, /gallery, /
+Architecture:
+  - MCP endpoint: `/mcp` (streamable HTTP transport)
+  - Web endpoints: `/images`, `/thumbs`, `/webp`, `/meta`, `/gallery`, `/`
 
-Описание:
-    Этот модуль объединяет два сервера в одном процессе:
-    1. MCP Server (FastMCP) - обрабатывает запросы от LLM-клиентов
-       через Streamable HTTP протокол на порту 8081.
-    2. Web Server (FastAPI) - предоставляет веб-интерфейс для
-       просмотра галереи и REST API для управления изображениями
-       на порту 8080.
+Overview:
+    This module runs two servers concurrently:
+    1. MCP server (FastMCP) for LLM clients over streamable HTTP (port 8081).
+    2. Web server (FastAPI) for the interactive gallery and a small REST API
+       (port 8080).
 
-Оба сервера работают в отдельных потоках для одновременной обработки
-запросов.
+The MCP server runs in a background thread while the web server runs in the
+main thread.
 """
 
 import logging
@@ -27,7 +25,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastmcp import FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -49,10 +47,8 @@ from app.utils import cleanup_old_files, get_file_info, safe_filename
 from app.web_server import _build_image_data_list, generate_gallery_html
 
 # ---------------------------------------------------------------------------
-# Логирование
+# Logging
 # ---------------------------------------------------------------------------
-# Настройка базового конфигурационного логирования
-# Формат: время [уровень] имя_модуля: сообщение
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -60,36 +56,31 @@ logging.basicConfig(
 logger = logging.getLogger("image-server")
 
 # ---------------------------------------------------------------------------
-# MCP сервер
+# MCP server
 # ---------------------------------------------------------------------------
-# FastMCP v3.x больше не принимает port в конструкторе,
-# поэтому настраиваем через переменную окружения ДО создания инстанса.
+# FastMCP v3.x reads the port from the environment.
 os.environ["FASTMCP_PORT"] = str(WEB_PORT + 1)
 
-# Создание MCP сервера с именем "image-gen-pro"
-# Этот сервер будет доступен по адресу http://host:8081/mcp
+# Create the MCP server instance. It will be reachable at:
+# http://<host>:8081/mcp
 mcp = FastMCP("image-gen-pro")
-# Регистрация всех инструментов для работы с изображениями
+# Register all MCP tools.
 register_image_tools(mcp)
 
-# Получаем FastAPI-приложение для MCP (Streamable HTTP)
-# FastMCP встроенный HTTP сервер работает на отдельном порту
-# Мы монитируем его через FastAPI
-
 # ---------------------------------------------------------------------------
-# Middleware для логирования MCP подключений
+# Middleware: MCP connection logging
 # ---------------------------------------------------------------------------
 class MCPConnectionLogger(BaseHTTPMiddleware):
-    """Middleware для логирования подключений и запросов к MCP endpoint."""
+    """Log MCP connections and request/response metrics."""
 
     def __init__(self, app, mcp_logger):
         super().__init__(app)
         self.logger = mcp_logger
-        # Отслеживаем активные сессии с ограничением размера
+        # Track active sessions with a bounded in-memory map.
         self.active_sessions: dict[str, dict] = {}
 
     def _prune_expired_sessions(self) -> None:
-        """Удалить сессии старше SESSION_MAX_AGE_SECONDS и ограничить размер."""
+        """Drop idle sessions and enforce MAX_SESSIONS."""
         now = time.time()
         expired = [
             sid for sid, info in self.active_sessions.items()
@@ -97,7 +88,7 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
         ]
         for sid in expired:
             self.active_sessions.pop(sid, None)
-        # Если всё ещё слишком много — удалить самые старые по connected_at
+        # If still too many, delete oldest sessions by connected_at.
         if len(self.active_sessions) > MAX_SESSIONS:
             sorted_sessions = sorted(
                 self.active_sessions.items(),
@@ -107,28 +98,28 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
                 self.active_sessions.pop(sid, None)
 
     async def dispatch(self, request: Request, call_next):
-        # Логируем только запросы к MCP endpoint
+        # Only log MCP endpoint traffic.
         if request.url.path.startswith("/mcp"):
             client_host = request.client.host if request.client else "unknown"
             client_port = request.client.port if request.client else 0
             method = request.method
             path = request.url.path
 
-            # Получаем session ID из заголовков (если есть)
+            # Session ID comes from the MCP headers (if present).
             session_id = request.headers.get("mcp-session-id", "no-session")
 
-            # Логируем новые подключения (POST без session ID = инициализация)
+            # New connection: POST without a session id (initial handshake).
             if method == "POST" and session_id == "no-session":
                 self.logger.info(
                     "🔌 NEW MCP CONNECTION from %s:%d",
                     client_host, client_port
                 )
             elif session_id != "no-session":
-                # Периодически очищаем просроченные сессии
+                # Periodically prune idle sessions.
                 if len(self.active_sessions) % 20 == 0:
                     self._prune_expired_sessions()
 
-                # Отслеживаем активные сессии
+                # Track session lifecycle.
                 if session_id not in self.active_sessions:
                     self.active_sessions[session_id] = {
                         "client": f"{client_host}:{client_port}",
@@ -143,7 +134,7 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
                     self.active_sessions[session_id]["request_count"] += 1
                     self.active_sessions[session_id]["last_request"] = time.time()
 
-                # Логируем запросы к инструментам
+                # Tool call logging (debug-level).
                 sess = self.active_sessions.get(session_id)
                 if sess:
                     self.logger.debug(
@@ -151,24 +142,24 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
                         session_id[:16], sess["request_count"], client_host,
                     )
 
-            # Замеряем время выполнения - единственный вызов call_next
+            # Measure end-to-end request time; call_next must be invoked once.
             start_time = time.time()
             
             try:
                 response = await call_next(request)
-            except Exception as e:
+            except Exception:
                 self.logger.exception("MCP Request failed")
                 raise
             
             duration = time.time() - start_time
 
-            # Логируем ответ
+            # Log response summary.
             self.logger.info(
                 "📤 MCP RESPONSE: %s %s -> %d (%.2fs) from %s",
                 method, path, response.status_code, duration, client_host
             )
 
-            # Логируем отключения (ошибки сессии)
+            # Log errors (often correspond to session disconnects/timeouts).
             if response.status_code >= 400:
                 self.logger.warning(
                     "⚠️ MCP ERROR: %s %s -> %d from %s (session: %s)",
@@ -181,12 +172,11 @@ class MCPConnectionLogger(BaseHTTPMiddleware):
 
 
 # ---------------------------------------------------------------------------
-# FastAPI приложение — веб-часть
+# Web server (FastAPI)
 # ---------------------------------------------------------------------------
-# Создание FastAPI приложения для веб-интерфейса
 app = FastAPI(title="Image MCP Server")
 
-# Добавляем middleware для логирования MCP подключений
+# Add MCP logging middleware.
 mcp_logger = logging.getLogger("mcp-connections")
 app.add_middleware(MCPConnectionLogger, mcp_logger=mcp_logger)
 
@@ -194,7 +184,7 @@ app.add_middleware(MCPConnectionLogger, mcp_logger=mcp_logger)
 @app.on_event("startup")
 async def startup_event():
     """
-    Проверка и создание необходимых директорий при запуске.
+    Ensure storage directories exist at startup.
     """
     for path in [IMAGE_DIR, THUMB_DIR, WEBP_DIR]:
         path.mkdir(parents=True, exist_ok=True)
@@ -203,36 +193,73 @@ async def startup_event():
         logger.info("Directory ready: %s", path)
 
 
-def _resolve_path(base: Path, filename: str) -> Path:
+def _ok(data=None) -> JSONResponse:
+    payload: dict = {"status": "ok"}
+    if data is not None:
+        payload["data"] = data
+    return JSONResponse(payload, status_code=200)
+
+
+def _error(status_code: int, message: str, data=None) -> JSONResponse:
+    payload: dict = {"status": "error", "error": message}
+    if data is not None:
+        payload["data"] = data
+    return JSONResponse(payload, status_code=status_code)
+
+
+def _resolve_path(base: Path, filename: str, *, must_exist: bool = False) -> Path:
     """
-    Безопасно разрешить путь, предотвращая path traversal атаки.
+    Resolve a user-provided filename against a base directory safely.
 
     Args:
-        base: Базовая директория для поиска файлов
-        filename: Имя файла для разрешения
+        base: Base directory to resolve against.
+        filename: User-provided filename.
 
     Returns:
-        Path: Полный путь к файлу
+        Path: An absolute resolved path under the base directory.
 
     Raises:
-        ValueError: Если имя файла недопустимо или путь выходит за пределы base
+        HTTPException: For invalid names or forbidden access. If `must_exist` is
+            True, missing files also raise a 404.
     """
     safe_name = safe_filename(filename)
     if not safe_name:
-        raise ValueError("Invalid filename")
-    path = (base / safe_name).resolve()
-    if not str(path).startswith(str(base.resolve())):
-        raise ValueError("Access denied")
-    return path
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    resolved_base = base.resolve()
+    candidate = resolved_base / safe_name
+
+    # If the path exists and is a symlink, resolve the final target and ensure it
+    # still stays under the base directory. This prevents symlink escapes like
+    # IMAGE_DIR/foo.png -> /etc/passwd.
+    if candidate.exists():
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+        except OSError:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if candidate.is_symlink() and not resolved_candidate.is_relative_to(resolved_base):
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if not resolved_candidate.is_relative_to(resolved_base):
+            raise HTTPException(status_code=403, detail="Access denied")
+        return resolved_candidate
+
+    # Missing file: still return a safe path, unless the caller requires existence.
+    if not candidate.is_relative_to(resolved_base):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if must_exist:
+        raise HTTPException(status_code=404, detail="File not found")
+    return candidate
 
 
 @app.get("/health")
 def health():
     """
-    Проверка работоспособности сервера.
+    Health check endpoint.
 
-    Возвращает:
-        dict: Статус сервера, пути к директориям и информацию о диске
+    Returns:
+        dict: Server status and basic disk info.
     """
     total, used, free = shutil.disk_usage("/")
     return {
@@ -246,114 +273,100 @@ def health():
 @app.get("/images/{filename}")
 def get_image(filename: str):
     """
-    Отдать оригинал изображения по имени файла.
+    Serve the original image by filename.
 
     Args:
-        filename: Имя файла изображения
+        filename: Image filename (no directory components).
 
     Returns:
-        FileResponse: Файл изображения с кэш-заголовками
-        JSONResponse: Ошибка 404 если файл не найден
+        FileResponse on success; otherwise a JSON error envelope.
     """
-    path = _resolve_path(IMAGE_DIR, filename)
-    if not path.exists():
-        return JSONResponse({"error": "Image not found"}, status_code=404)
-    return FileResponse(
-        path,
-        headers={"Cache-Control": "public, max-age=3600"}
-    )
+    try:
+        path = _resolve_path(IMAGE_DIR, filename, must_exist=True)
+        return FileResponse(path, headers={"Cache-Control": "public, max-age=3600"})
+    except HTTPException as exc:
+        return _error(exc.status_code, str(exc.detail))
 
 
 @app.get("/thumbs/{filename}")
 def get_thumbnail(filename: str):
     """
-    Отдать превью изображения по имени файла.
+    Serve a thumbnail image by filename.
 
-    Сначала ищет JPEG превью, если не найдено - ищет PNG.
+    The server prefers JPEG thumbnails but supports legacy PNG thumbnails.
 
     Args:
-        filename: Имя оригинального файла
+        filename: Thumbnail filename.
 
     Returns:
-        FileResponse: Файл превью с кэш-заголовками
-        JSONResponse: Ошибка 404 если превью не найдено
+        FileResponse on success; otherwise a JSON error envelope.
     """
-    path = _resolve_path(THUMB_DIR, filename)
-    if not path.exists():
-        # Проверяем наличие PNG превью (старый формат)
-        png_path = THUMB_DIR / (Path(filename).stem + ".png")
-        if png_path.exists():
-            path = png_path
-        else:
-            return JSONResponse({"error": "Thumbnail not found"}, status_code=404)
-    return FileResponse(
-        path,
-        headers={"Cache-Control": "public, max-age=3600"}
-    )
+    try:
+        path = _resolve_path(THUMB_DIR, filename, must_exist=True)
+    except HTTPException:
+        # Back-compat: try legacy PNG thumbs when JPG is missing.
+        try:
+            path = _resolve_path(THUMB_DIR, f"{Path(filename).stem}.png", must_exist=True)
+        except HTTPException as exc:
+            return _error(exc.status_code, "Thumbnail not found")
+
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/webp/{filename}")
 def get_webp(filename: str):
     """
-    Отдать WebP-копию изображения по имени файла.
-
-    WebP файлы — оптимизированные для веба копии оригинальных изображений.
+    Serve a WebP copy of an image by filename.
 
     Args:
-        filename: Имя WebP файла
+        filename: WebP filename.
 
     Returns:
-        FileResponse: Файл WebP с media_type image/webp и кэш-заголовками
-        JSONResponse: Ошибка 404 если файл не найден
+        FileResponse on success; otherwise a JSON error envelope.
     """
-    path = _resolve_path(WEBP_DIR, filename)
-    if not path.exists():
-        return JSONResponse({"error": "WebP not found"}, status_code=404)
-    return FileResponse(
-        path,
-        media_type="image/webp",
-        headers={"Cache-Control": "public, max-age=3600"}
-    )
+    try:
+        path = _resolve_path(WEBP_DIR, filename, must_exist=True)
+        return FileResponse(
+            path,
+            media_type="image/webp",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except HTTPException as exc:
+        return _error(exc.status_code, str(exc.detail))
 
 
 @app.get("/meta/{filename}")
 def get_meta(filename: str):
     """
-    Получить метаданные файла изображения.
+    Return metadata for an image.
 
     Args:
-        filename: Имя файла
+        filename: Image filename.
 
     Returns:
-        dict: Метаданные файла (размер, даты создания/изменения)
-        JSONResponse: Ошибка 404 если файл не найден
+        JSON envelope with file metadata.
     """
     try:
-        path = _resolve_path(IMAGE_DIR, filename)
-    except ValueError:
-        return JSONResponse({"error": "Invalid filename"}, status_code=400)
-    
-    if not path.exists():
-        return JSONResponse({"error": "Image not found"}, status_code=404)
-    
-    # Get relative path from IMAGE_DIR for consistent metadata lookup
-    rel_path = path.relative_to(IMAGE_DIR.resolve())
-    info = get_file_info(str(rel_path))
-    if info is None:
-        return JSONResponse({"error": "Image not found"}, status_code=404)
-    return info
+        path = _resolve_path(IMAGE_DIR, filename, must_exist=True)
+        rel_path = path.relative_to(IMAGE_DIR.resolve())
+        info = get_file_info(str(rel_path))
+        if info is None:
+            return _error(404, "Image not found")
+        return _ok(info)
+    except HTTPException as exc:
+        return _error(exc.status_code, str(exc.detail))
 
 
 @app.get("/gallery")
 def get_gallery(limit: int = 50):
     """
-    Список всех доступных изображений в галерее с метаданными.
+    List images in the gallery along with metadata.
 
     Args:
-        limit: Максимальное количество изображений (по умолчанию 50)
+        limit: Maximum number of images to return (default 50).
 
     Returns:
-        JSONResponse: Список изображений с URL и метаданными (prompt, negative, params, description)
+        JSON envelope containing `{images, count}` where each entry includes URLs and metadata.
     """
     images = []
     image_dir_resolved = IMAGE_DIR.resolve()
@@ -365,9 +378,9 @@ def get_gallery(limit: int = 50):
                 continue
             if str(resolved).startswith(str(WEBP_DIR.resolve())):
                 continue
-            # Относительный путь от IMAGE_DIR — защищает от коллизий имён в подкаталогах
+            # Relative path from IMAGE_DIR avoids name collisions across subfolders.
             rel_path = resolved.relative_to(image_dir_resolved)
-            # Нормализация пути (замена обратных слешей на прямые)
+            # Normalize path separators for URL generation.
             rel_path_str = str(rel_path).replace("\\", "/")
             # Use full path for metadata lookup to avoid collisions
             info = get_file_info(f)
@@ -380,7 +393,7 @@ def get_gallery(limit: int = 50):
                     info["size_bytes"] = size_bytes
                     # Round to one decimal place for kilobytes, matching other parts of the codebase
                     info["size_kb"] = round(size_bytes / 1024, 1)
-                # URL‑кодируем относительный путь для корректной работы с подкаталогами
+                # URL-encode the relative path to support subdirectories safely.
                 info["url"] = f"{PUBLIC_BASE_URL}/images/{quote(rel_path_str)}"
                 thumb_name = f.stem + ".jpg"
                 thumb_path = THUMB_DIR / thumb_name
@@ -389,52 +402,46 @@ def get_gallery(limit: int = 50):
                 images.append(info)
                 if len(images) >= limit:
                     break
-    return JSONResponse({"images": images, "count": len(images)})
+    return _ok({"images": images, "count": len(images)})
 
 
 @app.get("/api/refresh")
 def api_refresh():
     """
-    Вернуть обновлённый список изображений для AJAX-обновления галереи.
-
-    Используется кнопкой обновления в интерактивной галерее.
+    Return a refreshed image list for the interactive gallery.
 
     Returns:
-        JSONResponse: Объект с массивом images и count
+        JSON envelope containing `{images, count}`.
     """
     image_data = _build_image_data_list()
-    return JSONResponse({"images": image_data, "count": len(image_data)})
+    return _ok({"images": image_data, "count": len(image_data)})
 
 
 @app.delete("/api/delete/{filename}")
 def delete_image(filename: str):
     """
-    Удалить изображение и все связанные файлы (превью, WebP).
+    Delete an image and its derived files (thumbnail, WebP).
 
     Args:
-        filename: Имя файла изображения
+        filename: Image filename.
 
     Returns:
-        JSONResponse: Статус операции
+        JSON envelope describing what was deleted.
     """
     try:
-        # Безопасно разрешаем пути для всех связанных файлов
-        original_path = _resolve_path(IMAGE_DIR, filename)
-        
-        if not original_path.exists():
-            return JSONResponse({"status": "error", "error": "Image not found"}, status_code=404)
-        
-        deleted_files = []
-        errors = []
+        original_path = _resolve_path(IMAGE_DIR, filename, must_exist=True)
 
-        # 1. Удаляем оригинал
+        deleted_files: list[str] = []
+        errors: list[str] = []
+
+        # 1) Delete original
         try:
             original_path.unlink()
             deleted_files.append(f"Original: {filename}")
         except Exception as e:
             errors.append(f"Failed to delete original: {e}")
 
-        # 2. Удаляем превью (jpg и png версии)
+        # 2) Delete thumbnails (JPG and legacy PNG)
         stem = original_path.stem
         thumb_jpg = THUMB_DIR / f"{stem}.jpg"
         thumb_png = THUMB_DIR / f"{stem}.png"
@@ -447,7 +454,7 @@ def delete_image(filename: str):
                 except Exception as e:
                     errors.append(f"Failed to delete thumbnail {thumb_path.name}: {e}")
 
-        # 3. Удаляем WebP версию
+        # 3) Delete WebP copy
         from app.utils import ensure_webp
         webp_name = ensure_webp(filename)
         if webp_name:
@@ -461,20 +468,21 @@ def delete_image(filename: str):
 
         if errors:
             logger.warning("Partial delete for %s: %s", filename, errors)
-            return JSONResponse({
-                "status": "partial",
-                "deleted": deleted_files,
-                "errors": errors
-            })
-        
-        logger.info("Deleted image %s: %s", filename, deleted_files)
-        return JSONResponse({"status": "ok", "deleted": deleted_files})
+            return _error(
+                200,
+                "Partial delete",
+                data={"deleted": deleted_files, "errors": errors},
+            )
 
-    except ValueError as e:
-        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
-    except Exception as e:
+        logger.info("Deleted image %s: %s", filename, deleted_files)
+        return _ok({"deleted": deleted_files})
+
+    except HTTPException as exc:
+        message = "Image not found" if exc.status_code == 404 else str(exc.detail)
+        return _error(exc.status_code, message)
+    except Exception:
         logger.exception("Error deleting image %s", filename)
-        return JSONResponse({"status": "error", "error": "Internal server error"}, status_code=500)
+        return _error(500, "Internal server error")
 
 
 @app.post("/cleanup")
@@ -488,36 +496,31 @@ def cleanup():
     from app.settings import IMAGE_RETENTION_DAYS
     # ``cleanup_old_files`` returns the count of removed files.
     removed = cleanup_old_files()
-    return {"status": "ok", "removed": removed, "retention_days": IMAGE_RETENTION_DAYS}
+    return _ok({"removed": removed, "retention_days": IMAGE_RETENTION_DAYS})
 
 
 @app.get("/")
 def index():
     """
-    Интерактивная HTML-галерея с метаданными изображений.
-
-    Адаптирована из main.py: отображает prompt, negative prompt,
-    параметры генерации и description для каждого изображения.
-    Поддерживает навигацию через колёсико мыши, стрелки, миниатюры.
+    Render the interactive HTML gallery.
 
     Returns:
-        HTMLResponse: Страница галереи
+        HTMLResponse: The gallery page.
     """
     html_content = generate_gallery_html()
     return HTMLResponse(html_content)
 
 
 # ---------------------------------------------------------------------------
-# Запуск — два сервера: MCP (Streamable HTTP) + Web (FastAPI)
+# Entrypoint: run MCP (streamable HTTP) + Web (FastAPI)
 # ---------------------------------------------------------------------------
 
 
 def run_mcp_server():
     """
-    Запускает MCP сервер на Streamable HTTP.
+    Run the MCP server over streamable HTTP.
 
-    Этот метод запускается в отдельном потоке и обслуживает
-    запросы от LLM-клиентов через MCP протокол.
+    This function is executed in a background thread.
     """
     logger.info("Starting MCP server on port %d (Streamable HTTP, timeout=%ds)",
                 WEB_PORT + 1, MCP_TIMEOUT)
@@ -526,23 +529,23 @@ def run_mcp_server():
 
 def main():
     """
-    Запуск обоих серверов.
+    Start both servers.
 
-    Запускает MCP сервер в отдельном потоке и Web сервер в главном потоке.
-    MCP сервер работает как daemon, поэтому завершается вместе с основным процессом.
+    The MCP server is started in a daemon thread, so it exits when the main
+    process exits.
     """
-    # Проверяем согласованность настроек перед запуском
+    # Validate settings before startup.
     validate_settings()
 
     logger.info("Starting Image MCP Server")
     logger.info("MCP endpoint: http://%s:%d/mcp", WEB_HOST, WEB_PORT + 1)
     logger.info("Gallery: http://%s:%d/", WEB_HOST, WEB_PORT)
 
-    # MCP в отдельном потоке
+    # MCP runs in a background thread.
     mcp_thread = threading.Thread(target=run_mcp_server, daemon=True)
     mcp_thread.start()
 
-    # Web-сервер в главном потоке
+    # Web server runs in the main thread.
     uvicorn.run(app, host=WEB_HOST, port=WEB_PORT)
 
 

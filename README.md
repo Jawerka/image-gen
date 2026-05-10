@@ -64,7 +64,7 @@ cp .env.example .env
 nano .env
 
 # Запуск MCP + Web сервера
-python -m app.server
+python3 -m app.server
 ```
 
 ## Доступные MCP инструменты
@@ -84,9 +84,15 @@ python -m app.server
 | `/health` | GET | Health check |
 | `/images/{filename}` | GET | Оригинал изображения |
 | `/thumbs/{filename}` | GET | Превью |
+| `/webp/{filename}` | GET | WebP-копия (оптимизированная для веба) |
 | `/meta/{filename}` | GET | Метаданные файла |
 | `/gallery` | GET | Список всех изображений (JSON) |
+| `/api/refresh` | GET | Обновление списка для галереи (AJAX) |
+| `/api/delete/{filename}` | DELETE | Удалить изображение + связанные файлы |
 | `/cleanup` | POST | Очистка старых файлов |
+
+> Примечание по формату ответов: все JSON-эндпоинты (кроме отдачи файлов) возвращают конверт
+> `{ "status": "ok"|"error", "data"?: ..., "error"?: string }`.
 
 ## Подключение MCP-клиента
 

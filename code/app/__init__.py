@@ -1,14 +1,14 @@
 """
-Пакет приложения Image MCP Server.
+Image MCP Server application package.
 
-Модули:
-    - settings.py: Настройки приложения из .env
-    - utils.py: Утилиты для работы с файлами и изображениями
-    - tools.py: MCP инструменты для генерации и управления
-    - server.py: Единый сервер (MCP + Web)
-    - web_server.py: Генератор HTML-галереи
+Modules:
+    - settings.py: Settings loaded from `.env` / environment variables
+    - utils.py: File and image utilities
+    - tools.py: MCP tools for generation and management
+    - server.py: Combined server (MCP + Web)
+    - web_server.py: HTML gallery generator
 
-Использование:
+Usage:
     from app.server import main
     main()
 """

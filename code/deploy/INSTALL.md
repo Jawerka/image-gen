@@ -246,7 +246,7 @@ systemctl disable image-gen
 ```bash
 cd /root/image-gen/code
 source venv/bin/activate
-python -m app.server
+python3 -m app.server
 ```
 
 ---
@@ -285,7 +285,7 @@ curl http://localhost:8081/mcp
 cd /root/image-gen/code
 source venv/bin/activate
 
-python -c "
+python3 -c "
 from app.tools import generate_image
 result = generate_image(
     prompt='a beautiful sunset over mountains',
